@@ -1,0 +1,580 @@
+/**
+ * RankRepair – Image Optimizer Add-on
+ * Implements Figma design node 29:2
+ */
+
+(function ($) {
+    'use strict';
+
+    var RRImg = {
+        allImages:    [],
+        selectedIds:  [],
+        currentIndex: 0,
+        isRunning:    false,
+        isStopped:    false,
+        totalSaved:   0,
+        successCount: 0,
+        errorCount:   0,
+        skippedCount: 0,
+
+        // =====================================================================
+        // Boot
+        // =====================================================================
+
+        init: function () {
+            this.bindSettingsBar();
+            this.bindTableEvents();
+            this.bindFooterBar();
+            this.autoScan();
+        },
+
+        // =====================================================================
+        // Settings bar
+        // =====================================================================
+
+        bindSettingsBar: function () {
+            // Format segment
+            $(document).on('click', '#rr-img-format-seg .rr-img-seg__btn', function () {
+                $('#rr-img-format-seg .rr-img-seg__btn').removeClass('rr-img-seg__btn--active');
+                $(this).addClass('rr-img-seg__btn--active');
+                RRImg.saveSetting('format', $(this).data('val'));
+                RRImg.autoScan();
+            });
+
+            // Max width segment
+            $(document).on('click', '#rr-img-width-seg .rr-img-seg__btn', function () {
+                $('#rr-img-width-seg .rr-img-seg__btn').removeClass('rr-img-seg__btn--active');
+                $(this).addClass('rr-img-seg__btn--active');
+                RRImg.saveSetting('max_width', $(this).data('val'));
+                RRImg.autoScan();
+            });
+
+            // Quality slider
+            $('#rr-img-quality-slider').on('input', function () {
+                var val = $(this).val();
+                $('#rr-img-quality-val').text(val + '%');
+                var pct = Math.round((val - 60) / 40 * 100);
+                $('#rr-img-slider-fill').css('width', pct + '%');
+            }).on('change', function () {
+                RRImg.saveSetting('quality', $(this).val());
+                RRImg.autoScan();
+            });
+
+            // Backup toggle
+            $('#rr-img-backup-toggle').on('click', function () {
+                var $btn   = $(this);
+                var newVal = $btn.data('val') === '1' ? '0' : '1';
+                $btn.data('val', newVal)
+                    .attr('aria-pressed', newVal === '1')
+                    .toggleClass('rr-img-toggle--on', newVal === '1');
+                RRImg.saveSetting('backup_originals', newVal);
+            });
+        },
+
+        saveSetting: function (key, val) {
+            $.post(rrAdmin.ajaxUrl, {
+                action: 'rr_img_save_settings',
+                nonce:  rrAdmin.nonce,
+                [key]:  val
+            });
+        },
+
+        // =====================================================================
+        // Auto-scan
+        // =====================================================================
+
+        autoScan: function () {
+            var $tbody = $('#rr-img-tbody');
+            $tbody.html(
+                '<tr><td colspan="9" class="rr-img-empty-state">' +
+                '<div class="rr-img-empty-spinner"><span class="rr-spin rr-spin--lg"></span>' +
+                '<span>Afbeeldingen laden...</span></div></td></tr>'
+            );
+
+            $.post(rrAdmin.ajaxUrl, {
+                action: 'rr_img_scan',
+                nonce:  rrAdmin.nonce
+            }, function (response) {
+                if (!response.success) {
+                    $tbody.html('<tr><td colspan="9" class="rr-img-empty-state" style="color:var(--rr-danger)">' +
+                        RRImg.esc(response.data || 'Scanfout') + '</td></tr>');
+                    return;
+                }
+                RRImg.allImages   = response.data.images;
+                RRImg.selectedIds = [];
+                RRImg.renderTable(RRImg.allImages);
+                RRImg.updateStats(response.data);
+                RRImg.updateFooter();
+                $('#rr-img-all-count').text(RRImg.allImages.filter(function (i) { return i.needs_compression; }).length);
+            }).fail(function () {
+                $tbody.html('<tr><td colspan="9" class="rr-img-empty-state" style="color:var(--rr-danger)">Verbindingsfout. Herlaad de pagina.</td></tr>');
+            });
+        },
+
+        updateStats: function (data) {
+            if (!data) return;
+            if (data.total_size_text) {
+                var needsComp = RRImg.allImages.filter(function (i) { return i.needs_compression; });
+                var estTotal  = needsComp.reduce(function (s, i) { return s + i.est_size; }, 0);
+                var estSaved  = needsComp.reduce(function (s, i) { return s + (i.file_size - i.est_size); }, 0);
+                $('#rr-img-stat-total-size').text(data.total_size_text);
+                $('#rr-img-stat-total-sub').text('\u2192 ' + RRImg.formatBytes(estTotal) + ' na optimalisatie');
+                var estPct = data.total_bytes > 0 ? Math.round(estSaved / data.total_bytes * 100) : 0;
+                $('#rr-img-stat-saving-pct').text(estPct + '%');
+                $('#rr-img-stat-saving-sub').text('\u223C' + RRImg.formatBytes(estSaved) + ' te besparen');
+                $('#rr-img-footer-savings').text(RRImg.formatBytes(estSaved));
+                $('#rr-img-footer-pct').text(estPct);
+            }
+        },
+
+        // =====================================================================
+        // Table
+        // =====================================================================
+
+        renderTable: function (images) {
+            var $tbody = $('#rr-img-tbody');
+            $tbody.empty();
+
+            if (!images || images.length === 0) {
+                $tbody.html('<tr><td colspan="9" class="rr-img-empty-state">' +
+                    '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--rr-gray-300)" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg>' +
+                    '<div style="margin-top:8px;color:var(--rr-gray-400)">Alle afbeeldingen zijn al geoptimaliseerd!</div>' +
+                    '</td></tr>');
+                return;
+            }
+
+            images.forEach(function (img) {
+                $tbody.append(RRImg.buildRow(img));
+            });
+        },
+
+        buildRow: function (img) {
+            var isCompressed = img.status === 'done';
+            var isProcessing = img.status === 'processing';
+            var isQueued     = img.status === 'queued';
+
+            var rowBg  = isCompressed ? ' class="rr-img-row--done"' : '';
+            var thumb  = img.thumb_url
+                ? '<img src="' + img.thumb_url + '" class="rr-img-thumb" alt="">'
+                : '<div class="rr-img-thumb-placeholder"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>';
+
+            // Type badge
+            var mime  = img.mime_type || '';
+            var label = mime.replace('image/', '').toUpperCase();
+            var badgeCls = mime === 'image/png' ? 'rr-img-type-badge--png'
+                         : mime === 'image/gif' ? 'rr-img-type-badge--gif'
+                         : mime === 'image/webp'? 'rr-img-type-badge--webp'
+                         : 'rr-img-type-badge--jpg';
+
+            // Dimensions
+            var dimStr = '';
+            if (img.width && img.height) {
+                if (img.will_resize) {
+                    dimStr = '\u2192 ' + img.new_width + ' \u00D7 ' + img.new_height + 'px';
+                } else {
+                    dimStr = img.width + ' \u00D7 ' + img.height + 'px';
+                }
+            }
+
+            // Savings bar fill %
+            var barPct = Math.min(100, Math.max(0, img.est_savings_pct || 0));
+            var barColor = barPct >= 80 ? '#10b981' : barPct >= 50 ? '#f59e0b' : '#6366f1';
+
+            // Status badge
+            var statusHtml = RRImg.statusBadge(img);
+
+            // Action button
+            var actionHtml = '';
+            if (isCompressed) {
+                actionHtml = '<button class="rr-img-action-btn rr-img-action-btn--ghost rr-img-restore-btn" data-id="' + img.id + '">' +
+                    __('Ongedaan maken') + '</button>';
+            } else if (isProcessing) {
+                actionHtml = '<button class="rr-img-action-btn rr-img-action-btn--ghost rr-img-cancel-btn" data-id="' + img.id + '">' +
+                    __('Annuleren') + '</button>';
+            } else {
+                actionHtml = '<button class="rr-img-action-btn rr-img-action-btn--indigo rr-img-compress-btn" data-id="' + img.id + '">' +
+                    __('Optimaliseer') + '</button>';
+            }
+
+            var checked = RRImg.selectedIds.indexOf(img.id) !== -1 ? ' checked' : '';
+
+            return '<tr id="rr-img-row-' + img.id + '"' + rowBg + '>' +
+                '<td class="rr-img-td rr-img-td--check">' +
+                  '<input type="checkbox" class="rr-img-checkbox rr-img-row-check" data-id="' + img.id + '"' + checked + '>' +
+                '</td>' +
+                '<td class="rr-img-td rr-img-td--thumb">' + thumb + '</td>' +
+                '<td class="rr-img-td rr-img-td--name">' +
+                  '<div class="rr-img-filename">' + RRImg.esc(img.file_name) + '</div>' +
+                  '<div class="rr-img-meta-row">' +
+                    '<span class="rr-img-type-badge ' + badgeCls + '">' + label + '</span>' +
+                    (img.width ? '<span class="rr-img-dim-original">' + img.width + ' \u00D7 ' + img.height + 'px</span>' : '') +
+                  '</div>' +
+                '</td>' +
+                '<td class="rr-img-td rr-img-td--size rr-img-size--bad" id="rr-img-size-' + img.id + '">' +
+                  RRImg.esc(img.size_text) +
+                '</td>' +
+                '<td class="rr-img-td rr-img-td--after" id="rr-img-after-' + img.id + '">' +
+                  '<span class="rr-img-size--good">' + RRImg.esc(img.est_size_text) + '</span>' +
+                '</td>' +
+                '<td class="rr-img-td rr-img-td--savings">' +
+                  '<div class="rr-img-savings-badge" id="rr-img-sav-' + img.id + '">\u2193 ' + (img.est_savings_pct || 0) + '%</div>' +
+                  '<div class="rr-img-savings-bar">' +
+                    '<div class="rr-img-savings-bar__fill" style="width:' + barPct + '%;background:' + barColor + '"></div>' +
+                  '</div>' +
+                '</td>' +
+                '<td class="rr-img-td rr-img-td--dim">' + (dimStr ? RRImg.esc(dimStr) : '—') + '</td>' +
+                '<td class="rr-img-td rr-img-td--status">' + statusHtml + '</td>' +
+                '<td class="rr-img-td rr-img-td--action" id="rr-img-act-' + img.id + '">' + actionHtml + '</td>' +
+                '</tr>';
+        },
+
+        statusBadge: function (img) {
+            var st = img.status || 'waiting';
+            if (st === 'done') {
+                return '<span class="rr-img-status rr-img-status--done">\u2713 Klaar</span>';
+            } else if (st === 'processing') {
+                return '<span class="rr-img-status rr-img-status--processing">\u27F3 Bezig...</span>';
+            } else if (st === 'queued') {
+                return '<span class="rr-img-status rr-img-status--queued">\u2B24 In wachtrij</span>';
+            } else if (st === 'error') {
+                return '<span class="rr-img-status rr-img-status--error">\u2717 Fout</span>';
+            } else {
+                return '<span class="rr-img-status rr-img-status--wait">Wacht</span>';
+            }
+        },
+
+        // =====================================================================
+        // Table events
+        // =====================================================================
+
+        bindTableEvents: function () {
+            // Select all checkbox
+            $(document).on('change', '#rr-img-check-all', function () {
+                var checked = this.checked;
+                $('.rr-img-row-check').prop('checked', checked);
+                if (checked) {
+                    RRImg.selectedIds = RRImg.allImages.map(function (i) { return i.id; });
+                } else {
+                    RRImg.selectedIds = [];
+                }
+                RRImg.updateFooter();
+            });
+
+            // Row checkbox
+            $(document).on('change', '.rr-img-row-check', function () {
+                var id = parseInt($(this).data('id'), 10);
+                if (this.checked) {
+                    if (RRImg.selectedIds.indexOf(id) === -1) RRImg.selectedIds.push(id);
+                } else {
+                    RRImg.selectedIds = RRImg.selectedIds.filter(function (x) { return x !== id; });
+                }
+                $('#rr-img-check-all').prop('indeterminate',
+                    RRImg.selectedIds.length > 0 && RRImg.selectedIds.length < RRImg.allImages.length);
+                $('#rr-img-check-all').prop('checked',
+                    RRImg.selectedIds.length === RRImg.allImages.length && RRImg.allImages.length > 0);
+                RRImg.updateFooter();
+            });
+
+            // Select all button in header
+            $(document).on('click', '#rr-img-select-all-btn', function () {
+                var allChecked = RRImg.selectedIds.length === RRImg.allImages.length;
+                if (allChecked) {
+                    RRImg.selectedIds = [];
+                    $('.rr-img-row-check, #rr-img-check-all').prop('checked', false);
+                    $(this).text('Selecteer alles');
+                } else {
+                    RRImg.selectedIds = RRImg.allImages.map(function (i) { return i.id; });
+                    $('.rr-img-row-check, #rr-img-check-all').prop('checked', true);
+                    $(this).text('Deselecteer alles');
+                }
+                RRImg.updateFooter();
+            });
+
+            // Single compress
+            $(document).on('click', '.rr-img-compress-btn', function () {
+                RRImg.compressSingle(parseInt($(this).data('id'), 10));
+            });
+
+            // Restore
+            $(document).on('click', '.rr-img-restore-btn', function () {
+                RRImg.restoreSingle(parseInt($(this).data('id'), 10));
+            });
+
+            // Export btn (both locations)
+            $(document).on('click', '#rr-img-export-btn, #rr-img-export-footer-btn', function () {
+                RRImg.exportReport();
+            });
+
+            // Stop
+            $(document).on('click', '#rr-img-stop-btn', function () {
+                RRImg.isStopped = true;
+            });
+
+            // Optimize all
+            $(document).on('click', '#rr-img-optimize-all', function () {
+                if (!confirm(rrImg.strings.confirmBulk)) return;
+                var toProcess = RRImg.allImages.filter(function (i) { return i.needs_compression && i.status !== 'done'; });
+                RRImg.startBulk(toProcess);
+            });
+        },
+
+        // =====================================================================
+        // Footer bar
+        // =====================================================================
+
+        bindFooterBar: function () {
+            $(document).on('click', '#rr-img-optimize-sel-btn', function () {
+                if (!RRImg.selectedIds.length) return;
+                if (!confirm(rrImg.strings.confirmSelection)) return;
+                var toProcess = RRImg.allImages.filter(function (i) {
+                    return RRImg.selectedIds.indexOf(i.id) !== -1 && i.needs_compression && i.status !== 'done';
+                });
+                RRImg.startBulk(toProcess);
+            });
+        },
+
+        updateFooter: function () {
+            var count = RRImg.selectedIds.length;
+            var $selBtn = $('#rr-img-optimize-sel-btn');
+            var $selLbl = $('#rr-img-footer-sel');
+            var $selCnt = $('#rr-img-sel-count');
+
+            $selCnt.text(count);
+            $selBtn.prop('disabled', count === 0);
+
+            if (count > 0) {
+                $selLbl.text(count + ' geselecteerd').show();
+            } else {
+                $selLbl.hide();
+            }
+        },
+
+        // =====================================================================
+        // Bulk compression
+        // =====================================================================
+
+        startBulk: function (images) {
+            if (!images || images.length === 0) {
+                alert(rrImg.strings.noImages);
+                return;
+            }
+
+            this.isRunning    = true;
+            this.isStopped    = false;
+            this.currentIndex = 0;
+            this.totalSaved   = 0;
+            this.successCount = 0;
+            this.errorCount   = 0;
+            this.skippedCount = 0;
+
+            // Mark all as queued
+            images.forEach(function (img) {
+                RRImg.setStatus(img.id, 'queued');
+            });
+
+            $('#rr-img-progress-wrap').show();
+            $('#rr-img-optimize-all').prop('disabled', true);
+
+            this._bulkImages = images;
+            this.updateBulkProgress();
+            this.processNext();
+        },
+
+        processNext: function () {
+            if (this.isStopped || this.currentIndex >= this._bulkImages.length) {
+                this.finishBulk();
+                return;
+            }
+
+            var img = this._bulkImages[this.currentIndex];
+            this.setStatus(img.id, 'processing');
+
+            $.post(rrAdmin.ajaxUrl, {
+                action:          'rr_img_compress',
+                nonce:           rrAdmin.nonce,
+                attachment_id:   img.id,
+                convert_to_jpg:  rrImg.convertPngToJpg,
+                convert_to_webp: rrImg.convertToWebp
+            }, function (response) {
+                if (response.success) {
+                    var result = response.data;
+                    if (result.status === 'compressed') {
+                        RRImg.successCount++;
+                        RRImg.totalSaved += result.saved;
+                        RRImg.setStatus(img.id, 'done');
+                        RRImg.updateRowAfterCompress(img.id, result);
+                    } else {
+                        RRImg.skippedCount++;
+                        RRImg.setStatus(img.id, 'done');
+                    }
+                } else {
+                    RRImg.errorCount++;
+                    RRImg.setStatus(img.id, 'error');
+                }
+                RRImg.currentIndex++;
+                RRImg.updateBulkProgress();
+                setTimeout(function () { RRImg.processNext(); }, 300);
+            }).fail(function () {
+                RRImg.errorCount++;
+                RRImg.setStatus(img.id, 'error');
+                RRImg.currentIndex++;
+                RRImg.updateBulkProgress();
+                setTimeout(function () { RRImg.processNext(); }, 1500);
+            });
+        },
+
+        updateBulkProgress: function () {
+            var total = this._bulkImages.length;
+            var done  = this.currentIndex;
+            var pct   = total > 0 ? Math.round(done / total * 100) : 0;
+
+            $('#rr-img-progress-fill').css('width', pct + '%').find('.rr-img-progress-bar-pct').text(pct + '%');
+            $('#rr-img-progress-count').text(done + ' / ' + total);
+            $('#rr-img-progress-saved').text(this.totalSaved > 0 ? '\uD83D\uDCBE ' + RRImg.formatBytes(this.totalSaved) + ' bespaard' : '');
+        },
+
+        finishBulk: function () {
+            this.isRunning = false;
+            $('#rr-img-progress-fill').css('width', '100%').find('.rr-img-progress-bar-pct').text('100%');
+            $('#rr-img-optimize-all').prop('disabled', false);
+
+            // Update footer savings
+            if (this.totalSaved > 0) {
+                $('#rr-img-footer-savings').text(RRImg.formatBytes(this.totalSaved));
+            }
+
+            setTimeout(function () {
+                $('#rr-img-progress-wrap').fadeOut(400);
+            }, 2000);
+        },
+
+        // =====================================================================
+        // Single compress / restore
+        // =====================================================================
+
+        compressSingle: function (id) {
+            this.setStatus(id, 'processing');
+            $('#rr-img-act-' + id).html(
+                '<button class="rr-img-action-btn rr-img-action-btn--ghost rr-img-cancel-btn" data-id="' + id + '">Annuleren</button>'
+            );
+
+            $.post(rrAdmin.ajaxUrl, {
+                action:          'rr_img_compress',
+                nonce:           rrAdmin.nonce,
+                attachment_id:   id,
+                convert_to_jpg:  rrImg.convertPngToJpg,
+                convert_to_webp: rrImg.convertToWebp
+            }, function (response) {
+                if (response.success) {
+                    RRImg.setStatus(id, 'done');
+                    RRImg.updateRowAfterCompress(id, response.data);
+                } else {
+                    RRImg.setStatus(id, 'error');
+                    $('#rr-img-act-' + id).html(
+                        '<button class="rr-img-action-btn rr-img-action-btn--indigo rr-img-compress-btn" data-id="' + id + '">Opnieuw</button>'
+                    );
+                }
+            }).fail(function () {
+                RRImg.setStatus(id, 'error');
+                $('#rr-img-act-' + id).html(
+                    '<button class="rr-img-action-btn rr-img-action-btn--indigo rr-img-compress-btn" data-id="' + id + '">Opnieuw</button>'
+                );
+            });
+        },
+
+        restoreSingle: function (id) {
+            if (!confirm('Weet je zeker dat je het origineel wilt herstellen?')) return;
+            $.post(rrAdmin.ajaxUrl, {
+                action:        'rr_img_restore',
+                nonce:         rrAdmin.nonce,
+                attachment_id: id
+            }, function (response) {
+                if (response.success) {
+                    RRImg.autoScan();
+                } else {
+                    alert(response.data || 'Fout bij herstellen.');
+                }
+            });
+        },
+
+        // =====================================================================
+        // Row update after compression
+        // =====================================================================
+
+        updateRowAfterCompress: function (id, result) {
+            if (result.status !== 'compressed') return;
+
+            var $row = $('#rr-img-row-' + id);
+            $row.addClass('rr-img-row--done');
+
+            // Update size cells
+            $('#rr-img-size-' + id).text(RRImg.formatBytes(result.original_size))
+                .removeClass('rr-img-size--bad').addClass('rr-img-size--muted');
+            $('#rr-img-after-' + id).html('<span class="rr-img-size--good">' + RRImg.formatBytes(result.new_size) + '</span>');
+            $('#rr-img-sav-' + id).text('\u2193 ' + result.percentage + '%');
+
+            // Action button → restore
+            $('#rr-img-act-' + id).html(
+                '<button class="rr-img-action-btn rr-img-action-btn--ghost rr-img-restore-btn" data-id="' + id + '">Ongedaan maken</button>'
+            );
+        },
+
+        setStatus: function (id, status) {
+            var img = RRImg.allImages.find(function (i) { return i.id === id; });
+            if (img) img.status = status;
+            // Re-render just the status cell
+            var $statusCell = $('#rr-img-row-' + id + ' .rr-img-td--status');
+            $statusCell.html(RRImg.statusBadge(img || {status: status}));
+        },
+
+        // =====================================================================
+        // Export report
+        // =====================================================================
+
+        exportReport: function () {
+            if (!RRImg.allImages.length) {
+                alert('Geen afbeeldingen geladen. Wacht tot de scan klaar is.');
+                return;
+            }
+            var rows = [['Bestandsnaam', 'Huidig (bytes)', 'Na optimalisatie (est.)', 'Besparing %', 'Breedte', 'Hoogte', 'Status']];
+            RRImg.allImages.forEach(function (img) {
+                rows.push([img.file_name, img.file_size, img.est_size, img.est_savings_pct, img.width, img.height, img.status || 'wacht']);
+            });
+            var csv = rows.map(function (r) { return r.map(function (c) { return '"' + String(c).replace(/"/g, '""') + '"'; }).join(','); }).join('\n');
+            var blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+            var url  = URL.createObjectURL(blob);
+            var a    = document.createElement('a');
+            a.href = url; a.download = 'rankrepair-afbeeldingen-rapport.csv';
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a); URL.revokeObjectURL(url);
+        },
+
+        // =====================================================================
+        // Helpers
+        // =====================================================================
+
+        formatBytes: function (bytes) {
+            if (!bytes || bytes <= 0) return '0 B';
+            var k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+            var i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        },
+
+        esc: function (text) {
+            if (!text && text !== 0) return '';
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(String(text)));
+            return div.innerHTML;
+        }
+    };
+
+    // Simple i18n stub – uses rrImg.strings when available
+    function __(text) { return text; }
+
+    $(document).ready(function () {
+        if ($('.rr-img-wrap').length) {
+            RRImg.init();
+        }
+    });
+
+})(jQuery);

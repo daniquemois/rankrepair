@@ -1,0 +1,197 @@
+/* Form Tester Specific Styles */
+
+.rr-scan-form-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.rr-url-input-large {
+    min-width: 400px;
+    padding: 8px 12px !important;
+    font-size: 14px !important;
+}
+
+.rr-quick-scan {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.rr-quick-label {
+    font-weight: 600;
+    color: #666;
+    font-size: 13px;
+}
+
+.rr-quick-scan-link {
+    display: inline-block;
+    padding: 3px 10px;
+    background: #f0f0f0;
+    border-radius: 12px;
+    font-size: 12px;
+    text-decoration: none;
+    color: #2271b1;
+    transition: all 0.2s;
+}
+
+.rr-quick-scan-link:hover {
+    background: #2271b1;
+    color: #fff;
+}
+
+/* Forms Grid */
+.rr-forms-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 20px;
+}
+
+.rr-form-card {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: box-shadow 0.2s;
+}
+
+.rr-form-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.rr-form-card-header {
+    padding: 12px 16px;
+    background: #f9f9f9;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.rr-form-type-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    background: #2271b1;
+    color: #fff;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.rr-form-id {
+    color: #999;
+    font-size: 12px;
+    font-family: monospace;
+}
+
+.rr-form-card-body {
+    padding: 16px;
+}
+
+.rr-form-card-body p {
+    margin: 5px 0;
+    font-size: 13px;
+}
+
+.rr-form-card-body code {
+    font-size: 11px;
+    background: #f0f0f0;
+    padding: 2px 5px;
+    border-radius: 3px;
+    word-break: break-all;
+}
+
+.rr-form-fields {
+    margin-top: 10px;
+}
+
+.rr-field-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    margin: 2px;
+    background: #e8f0fe;
+    color: #1a73e8;
+    border-radius: 12px;
+    font-size: 11px;
+}
+
+.rr-field-tag small {
+    color: #999;
+}
+
+.rr-form-card-footer {
+    padding: 12px 16px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+}
+
+/* Test Results */
+.rr-test-result {
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 15px;
+}
+
+.rr-test-result-header {
+    padding: 15px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.rr-test-result-header .dashicons {
+    font-size: 24px;
+    width: 24px;
+    height: 24px;
+}
+
+.rr-test-result-header h3 {
+    margin: 0;
+    font-size: 16px;
+}
+
+.rr-result-success .rr-test-result-header {
+    background: #e6f5ea;
+    color: #00a32a;
+}
+
+.rr-result-error .rr-test-result-header {
+    background: #fce4e4;
+    color: #d63638;
+}
+
+.rr-test-result-body {
+    padding: 20px;
+}
+
+.rr-diagnosis-list {
+    list-style: none;
+    padding: 0;
+    margin: 10px 0;
+}
+
+.rr-diagnosis-list li {
+    padding: 8px 12px;
+    margin: 5px 0;
+    background: #f9f9f9;
+    border-left: 3px solid #2271b1;
+    border-radius: 0 4px 4px 0;
+    font-size: 13px;
+}
+
+.rr-result-error .rr-diagnosis-list li {
+    border-left-color: #d63638;
+}
+
+.rr-test-result-footer {
+    padding: 15px 20px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+}
+
+.rr-diagnosis-cell {
+    max-width: 250px;
+    font-size: 12px;
+    color: #666;
+}
