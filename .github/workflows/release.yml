@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Versienummer uit tag halen
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: ZIP aanmaken
+        run: |
+          mkdir -p build
+          rsync -r \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='node_modules' \
+            --exclude='*.zip' \
+            --exclude='.DS_Store' \
+            ./ build/rankrepair/
+          cd build && zip -r rankrepair.zip rankrepair/
+
+      - name: GitHub Release aanmaken
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "RankRepair v${{ steps.version.outputs.VERSION }}"
+          files: build/rankrepair.zip
+          generate_release_notes: true
