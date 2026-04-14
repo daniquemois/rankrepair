@@ -1,150 +1,109 @@
-(function($) {
+(function ($) {
     'use strict';
 
-    // Import redirects CSV
-    $('#rr-redirects-import-form').on('submit', function(e) {
-        e.preventDefault();
+    // ── Drag & drop + file name display ──────────────────────────────────────
 
-        var fileInput = $('#rr-redirects-csv-file')[0];
-        if (!fileInput.files.length) {
-            alert('Selecteer eerst een bestand.');
-            return;
-        }
+    var $dropzone = $('#rr-dropzone');
+    var $fileInput = $('#rr-csv-file');
 
-        var formData = new FormData();
-        formData.append('action', 'rr_import_redirects');
-        formData.append('nonce', rrAdmin.nonce);
-        formData.append('csv_file', fileInput.files[0]);
-
-        var $status = $('#rr-redirects-status');
-        $status.html('<div class="rr-notice rr-notice-info"><span class="rr-spinner-inline"></span> Importeren...</div>');
-
-        $.ajax({
-            url: rrAdmin.ajaxUrl,
-            type: 'POST',
-            data: formData,
-            processData: false,
-            contentType: false,
-            success: function(response) {
-                if (response.success) {
-                    $status.html('<div class="rr-notice rr-notice-success"><span class="dashicons dashicons-yes"></span> ' + response.data.message + '</div>');
-                    setTimeout(function() { location.reload(); }, 2000);
-                } else {
-                    $status.html('<div class="rr-notice rr-notice-error"><span class="dashicons dashicons-no"></span> ' + response.data.message + '</div>');
-                }
-            },
-            error: function() {
-                $status.html('<div class="rr-notice rr-notice-error"><span class="dashicons dashicons-no"></span> Er is een fout opgetreden.</div>');
+    if ($dropzone.length) {
+        $dropzone.on('click', function (e) {
+            if (!$(e.target).is('label, .rr-rc-browse-link')) {
+                $fileInput.trigger('click');
             }
         });
-    });
 
-    // Check all redirects
-    $('#rr-check-all-redirects').on('click', function() {
-        var $btn = $(this);
-        var $status = $('#rr-redirects-status');
-
-        $btn.prop('disabled', true).html('<span class="dashicons dashicons-update rr-spin"></span> Controleren...');
-        $status.html('<div class="rr-notice rr-notice-info"><span class="rr-spinner-inline"></span> Alle redirects worden gecontroleerd. Dit kan even duren...</div>');
-
-        $.post(rrAdmin.ajaxUrl, {
-            action: 'rr_check_redirects',
-            nonce: rrAdmin.nonce
-        }, function(response) {
-            $btn.prop('disabled', false).html('<span class="dashicons dashicons-search"></span> Controleer Alle Redirects');
-            if (response.success) {
-                $status.html('<div class="rr-notice rr-notice-success"><span class="dashicons dashicons-yes"></span> ' + response.data.message + '</div>');
-                setTimeout(function() { location.reload(); }, 1500);
-            } else {
-                $status.html('<div class="rr-notice rr-notice-error"><span class="dashicons dashicons-no"></span> ' + response.data.message + '</div>');
-            }
-        }).fail(function() {
-            $btn.prop('disabled', false).html('<span class="dashicons dashicons-search"></span> Controleer Alle Redirects');
-            $status.html('<div class="rr-notice rr-notice-error"><span class="dashicons dashicons-no"></span> Timeout of fout. Probeer het opnieuw.</div>');
-        });
-    });
-
-    // Fix redirect
-    $(document).on('click', '.rr-btn-fix-redirect', function() {
-        var $btn = $(this);
-        var id = $btn.data('id');
-        var $row = $btn.closest('tr');
-
-        $btn.prop('disabled', true).html('<span class="dashicons dashicons-update rr-spin"></span>');
-
-        $.post(rrAdmin.ajaxUrl, {
-            action: 'rr_fix_redirect',
-            nonce: rrAdmin.nonce,
-            id: id
-        }, function(response) {
-            if (response.success) {
-                $row.removeClass('rr-row-error').addClass('rr-row-ok rr-row-saved');
-                $row.find('.rr-status-icon').html('<span class="dashicons dashicons-yes"></span>').removeClass('rr-status-error').addClass('rr-status-ok');
-                $row.find('.rr-error-message').text('Redirect geactiveerd via RankRepair');
-                $btn.replaceWith('<span class="rr-badge rr-badge-success">Gefixt!</span>');
-            } else {
-                alert(response.data.message);
-                $btn.prop('disabled', false).html('<span class="dashicons dashicons-admin-tools"></span> Fix');
-            }
-        });
-    });
-
-    // Delete redirect
-    $(document).on('click', '.rr-btn-delete-redirect', function() {
-        var $btn = $(this);
-        var id = $btn.data('id');
-        var $row = $btn.closest('tr');
-
-        if (!confirm('Weet je zeker dat je deze redirect wilt verwijderen?')) return;
-
-        $.post(rrAdmin.ajaxUrl, {
-            action: 'rr_delete_redirect',
-            nonce: rrAdmin.nonce,
-            id: id
-        }, function(response) {
-            if (response.success) {
-                $row.fadeOut(300, function() { $(this).remove(); });
-            } else {
-                alert(response.data.message);
-            }
-        });
-    });
-
-    // Add redirect manually
-    $('#rr-add-redirect-form').on('submit', function(e) {
-        e.preventDefault();
-
-        var source = $('#rr-redirect-source').val();
-        var target = $('#rr-redirect-target').val();
-        var type = $('#rr-redirect-type').val();
-
-        if (!source || !target) {
-            alert('Vul beide URL\'s in.');
-            return;
-        }
-
-        // Create a temporary CSV and import
-        var csvContent = 'source,target,type\n' + source + ',' + target + ',' + type;
-        var blob = new Blob([csvContent], { type: 'text/csv' });
-        var formData = new FormData();
-        formData.append('action', 'rr_import_redirects');
-        formData.append('nonce', rrAdmin.nonce);
-        formData.append('csv_file', blob, 'redirect.csv');
-
-        $.ajax({
-            url: rrAdmin.ajaxUrl,
-            type: 'POST',
-            data: formData,
-            processData: false,
-            contentType: false,
-            success: function(response) {
-                if (response.success) {
-                    location.reload();
-                } else {
-                    alert(response.data.message);
+        $dropzone.on('dragover dragenter', function (e) {
+            e.preventDefault();
+            $(this).addClass('is-over');
+        }).on('dragleave drop', function (e) {
+            e.preventDefault();
+            $(this).removeClass('is-over');
+            if (e.type === 'drop') {
+                var files = e.originalEvent.dataTransfer.files;
+                if (files.length) {
+                    $fileInput[0].files = files;
+                    showFilename(files[0].name);
                 }
             }
         });
+
+        $fileInput.on('change', function () {
+            if (this.files.length) showFilename(this.files[0].name);
+        });
+
+        function showFilename(name) {
+            $('#rr-filename-display').text('📎 ' + name);
+        }
+    }
+
+    // ── Select all checkbox ───────────────────────────────────────────────────
+
+    $('#rr-check-all').on('change', function () {
+        $('.rr-result-row:not(.is-hidden) .rr-row-cb').prop('checked', $(this).is(':checked'));
+    });
+
+    // ── Filter tabs ───────────────────────────────────────────────────────────
+
+    $('#rr-filter-tabs').on('click', '.rr-rc-filter', function () {
+        var filter = $(this).data('filter');
+
+        $('#rr-filter-tabs .rr-rc-filter').removeClass('active');
+        $(this).addClass('active');
+
+        $('.rr-result-row').each(function () {
+            var status = $(this).data('status');
+            if (filter === 'all' || filter === status) {
+                $(this).removeClass('is-hidden');
+            } else {
+                $(this).addClass('is-hidden');
+            }
+        });
+
+        // Uncheck select-all when filtering
+        $('#rr-check-all').prop('checked', false);
+    });
+
+    // ── Export rapport ────────────────────────────────────────────────────────
+
+    $('#rr-export-btn').on('click', function () {
+        var raw = $(this).data('results');
+        if (!raw) return;
+
+        var results;
+        try {
+            results = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+            alert('Kon rapport niet exporteren.');
+            return;
+        }
+
+        var rows = [['Van URL', 'Naar URL', 'Type', 'Status', 'Reden', 'HTTP code']];
+        results.forEach(function (r) {
+            rows.push([
+                r.source        || '',
+                r.target        || '',
+                r.type          || '301',
+                r.status        || '',
+                r.reason        || '',
+                r.http_code     || ''
+            ]);
+        });
+
+        var csv = rows.map(function (row) {
+            return row.map(function (cell) {
+                var str = String(cell).replace(/"/g, '""');
+                return '"' + str + '"';
+            }).join(',');
+        }).join('\r\n');
+
+        var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        var url  = URL.createObjectURL(blob);
+        var a    = document.createElement('a');
+        a.href     = url;
+        a.download = 'redirect-rapport.csv';
+        a.click();
+        URL.revokeObjectURL(url);
     });
 
 })(jQuery);

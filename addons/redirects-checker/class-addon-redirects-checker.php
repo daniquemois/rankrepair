@@ -1,240 +1,598 @@
 <?php
 /**
  * Redirects Checker Add-on
- * Import redirects, check for errors, and fix broken redirects
- * Unlike the Redirection plugin, this focuses ONLY on errors
+ * Validates redirect CSV files before importing to the Redirection plugin.
  */
 
-if (!defined('ABSPATH')) {
+if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
 class RR_Addon_Redirects_Checker extends RR_Addon_Base {
 
-    protected function init() {
-        $this->slug = 'redirects-checker';
-        $this->name = __('Redirects Checker', 'rankrepair');
-        $this->description = __('Importeer redirects, controleer op fouten en los ze op. Toont alleen de problemen, niet alle correcte redirects.', 'rankrepair');
-        $this->icon = 'dashicons-randomize';
+    private array $redirects = [];
+
+    protected function init(): void {
+        $this->slug        = 'redirects-checker';
+        $this->name        = 'Redirects Checker';
+        $this->description = 'Valideer redirects vóór ze live gaan → stuur door naar Redirection plugin.';
+        $this->icon        = 'dashicons-randomize';
     }
 
-    public function get_stats() {
-        global $wpdb;
-        $table = $wpdb->prefix . 'rr_redirects';
-
-        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== $table) {
-            return ['total' => 0, 'issues' => 0];
-        }
-
-        $total = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table");
-        $errors = (int) $wpdb->get_var("SELECT COUNT(*) FROM $table WHERE is_error = 1");
-
-        return [
-            'total'  => $total,
-            'issues' => $errors,
-        ];
+    public function get_stats(): array {
+        return [ 'total' => 0, 'issues' => 0 ];
     }
 
-    public function enqueue_assets($hook) {
-        if (strpos($hook, 'rankrepair-redirects-checker') === false) return;
+    public function enqueue_assets( $hook ): void {
+        if ( strpos( $hook, 'rankrepair-redirects-checker' ) === false ) return;
 
         wp_enqueue_style(
             'rr-redirects-checker',
             RR_PLUGIN_URL . 'addons/redirects-checker/redirects-checker.css',
-            ['rr-admin-style'],
+            [ 'rr-admin-style' ],
             RR_VERSION
         );
-
         wp_enqueue_script(
             'rr-redirects-checker',
             RR_PLUGIN_URL . 'addons/redirects-checker/redirects-checker.js',
-            ['jquery', 'rr-admin-script'],
+            [ 'jquery' ],
             RR_VERSION,
             true
         );
     }
 
-    public function render_page() {
-        global $wpdb;
-        $table = $wpdb->prefix . 'rr_redirects';
+    // -------------------------------------------------------------------------
+    // Page render
+    // -------------------------------------------------------------------------
 
-        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
+    public function render_page(): void {
+        $step          = 1;
+        $results       = null;
+        $filename      = '';
+        $elapsed       = 0;
+        $import_result = null;
+        $upload_error  = '';
 
-        $filter = isset($_GET['filter']) ? sanitize_text_field($_GET['filter']) : 'errors';
+        if ( isset( $_POST['rr_import_to_redirection'] ) && check_admin_referer( 'rr_redirects_import' ) ) {
+            $import_result = $this->import_to_redirection();
 
-        $where = '1=1';
-        if ($filter === 'errors') {
-            $where .= ' AND is_error = 1';
-        } elseif ($filter === 'unchecked') {
-            $where .= ' AND last_checked IS NULL';
+        } elseif ( isset( $_POST['rr_validate_csv'] ) && check_admin_referer( 'rr_redirects_checker' ) ) {
+            $start = microtime( true );
+            if ( $this->process_csv( $upload_error ) ) {
+                $results  = $this->redirects;
+                $filename = sanitize_file_name( $_FILES['redirect_csv']['name'] ?? 'redirects.csv' );
+                $elapsed  = round( microtime( true ) - $start, 1 );
+                $step     = 2;
+            }
         }
 
-        $items = $table_exists ? $wpdb->get_results("SELECT * FROM $table WHERE $where ORDER BY is_error DESC, last_checked DESC", ARRAY_A) : [];
-        $stats = $this->get_stats();
+        $valid_count = $warning_count = $error_count = 0;
+        if ( $results ) {
+            foreach ( $results as $r ) {
+                if ( $r['status'] === 'error' )        $error_count++;
+                elseif ( $r['status'] === 'warning' )  $warning_count++;
+                else                                    $valid_count++;
+            }
+        }
 
-        $this->render_header(null, __('Importeer redirects, controleer op fouten en los ze op met één klik. Focust alleen op problemen.', 'rankrepair'));
+        $redirection_active = class_exists( 'Red_Item' );
         ?>
+        <div class="wrap rr-rc-page">
 
-        <!-- Stats -->
-        <div class="rr-stats-row">
-            <div class="rr-stat-card">
-                <div class="rr-stat-number"><?php echo esc_html($stats['total']); ?></div>
-                <div class="rr-stat-label"><?php _e('Totaal Redirects', 'rankrepair'); ?></div>
+            <!-- ===== HEADER ===== -->
+            <div class="rr-rc-header">
+                <div class="rr-rc-header-left">
+                    <div class="rr-rc-logo">RR</div>
+                    <div>
+                        <div class="rr-rc-title-row">
+                            <span class="rr-rc-title">Rank<span>Repair</span></span>
+                            <span class="rr-rc-badge-green">Redirect Checker</span>
+                        </div>
+                        <p class="rr-rc-subtitle">Valideer redirects vóór ze live gaan → stuur door naar Redirection plugin</p>
+                    </div>
+                </div>
+                <div class="rr-rc-plugin-status <?php echo $redirection_active ? 'is-connected' : 'is-disconnected'; ?>">
+                    <span class="dashicons dashicons-<?php echo $redirection_active ? 'yes-alt' : 'warning'; ?>"></span>
+                    Redirection plugin: <?php echo $redirection_active ? 'verbonden' : 'niet actief'; ?>
+                </div>
             </div>
-            <div class="rr-stat-card rr-stat-danger">
-                <div class="rr-stat-number"><?php echo esc_html($stats['issues']); ?></div>
-                <div class="rr-stat-label"><?php _e('Fouten', 'rankrepair'); ?></div>
-            </div>
-            <div class="rr-stat-card rr-stat-success">
-                <div class="rr-stat-number"><?php echo esc_html($stats['total'] - $stats['issues']); ?></div>
-                <div class="rr-stat-label"><?php _e('Correct', 'rankrepair'); ?></div>
-            </div>
-        </div>
 
-        <!-- Import & Actions -->
-        <div class="rr-card">
-            <div class="rr-card-header">
-                <h2><span class="dashicons dashicons-upload"></span> <?php _e('Importeer & Controleer', 'rankrepair'); ?></h2>
-            </div>
-            <div class="rr-card-body">
-                <p><?php _e('Upload een CSV/Excel bestand met kolommen: source (van), target (naar), type (301/302). Of voeg handmatig een redirect toe.', 'rankrepair'); ?></p>
-                
-                <div class="rr-action-row">
-                    <form id="rr-redirects-import-form" enctype="multipart/form-data" class="rr-inline-form">
-                        <input type="file" id="rr-redirects-csv-file" name="csv_file" accept=".csv,.xlsx,.xls">
-                        <button type="submit" class="button rr-btn-primary">
-                            <span class="dashicons dashicons-upload"></span> <?php _e('Importeer', 'rankrepair'); ?>
-                        </button>
-                    </form>
+            <!-- ===== STEPS ===== -->
+            <?php $this->render_steps( $step, (bool) $results ); ?>
 
-                    <button id="rr-check-all-redirects" class="button rr-btn-secondary">
-                        <span class="dashicons dashicons-search"></span> <?php _e('Controleer Alle Redirects', 'rankrepair'); ?>
-                    </button>
+            <!-- ===== IMPORT RESULT ===== -->
+            <?php if ( $import_result ): ?>
+                <div class="rr-rc-card rr-rc-import-result">
+                    <?php if ( $import_result['success'] ): ?>
+                        <h2>✅ Import voltooid!</h2>
+                        <ul>
+                            <li><strong><?php echo $import_result['imported']; ?></strong> redirects geïmporteerd</li>
+                            <?php if ( $import_result['disabled'] > 0 ): ?>
+                                <li><strong><?php echo $import_result['disabled']; ?></strong> geïmporteerd als uitgeschakeld (hadden fouten)</li>
+                            <?php endif; ?>
+                        </ul>
+                        <a href="<?php echo admin_url( 'tools.php?page=redirection.php' ); ?>" class="rr-rc-btn rr-rc-btn-primary">
+                            Bekijk in Redirection plugin →
+                        </a>
+                        &nbsp;
+                        <a href="<?php echo admin_url( 'admin.php?page=rankrepair-redirects-checker' ); ?>" class="rr-rc-btn rr-rc-btn-secondary">
+                            Nieuwe CSV uploaden
+                        </a>
+                    <?php else: ?>
+                        <div class="rr-rc-error-notice"><?php echo esc_html( $import_result['message'] ); ?></div>
+                    <?php endif; ?>
                 </div>
 
-                <!-- Manual Add -->
-                <div class="rr-manual-add" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee;">
-                    <h3><?php _e('Handmatig Toevoegen', 'rankrepair'); ?></h3>
-                    <form id="rr-add-redirect-form" class="rr-inline-form">
-                        <input type="url" id="rr-redirect-source" placeholder="<?php _e('Bron URL (van)', 'rankrepair'); ?>" class="regular-text" required>
-                        <input type="url" id="rr-redirect-target" placeholder="<?php _e('Doel URL (naar)', 'rankrepair'); ?>" class="regular-text" required>
-                        <select id="rr-redirect-type">
-                            <option value="301">301 (Permanent)</option>
-                            <option value="302">302 (Tijdelijk)</option>
-                            <option value="307">307 (Tijdelijk)</option>
-                        </select>
-                        <button type="submit" class="button rr-btn-primary">
-                            <span class="dashicons dashicons-plus-alt2"></span> <?php _e('Toevoegen', 'rankrepair'); ?>
-                        </button>
+            <!-- ===== UPLOAD FORM ===== -->
+            <?php elseif ( ! $results ): ?>
+                <div class="rr-rc-card">
+                    <?php if ( $upload_error ): ?>
+                        <div class="rr-rc-error-notice"><?php echo esc_html( $upload_error ); ?></div>
+                    <?php endif; ?>
+                    <form method="post" enctype="multipart/form-data">
+                        <?php wp_nonce_field( 'rr_redirects_checker' ); ?>
+                        <div class="rr-rc-dropzone" id="rr-dropzone">
+                            <div class="rr-rc-dropzone-icon">📄</div>
+                            <p class="rr-rc-dropzone-title">Sleep je CSV hier naartoe of <label for="rr-csv-file" class="rr-rc-browse-link">klik om te bladeren</label></p>
+                            <p class="rr-rc-dropzone-hint">Formaat: Van,Naar &nbsp;|&nbsp; Optioneel: Van,Naar,Type (301/302)</p>
+                            <p class="rr-rc-dropzone-filename" id="rr-filename-display"></p>
+                            <input type="file" name="redirect_csv" id="rr-csv-file" accept=".csv" required style="display:none">
+                        </div>
+                        <div class="rr-rc-upload-actions">
+                            <button type="submit" name="rr_validate_csv" class="rr-rc-btn rr-rc-btn-primary">
+                                <span class="dashicons dashicons-search"></span> Valideer Redirects
+                            </button>
+                        </div>
                     </form>
                 </div>
 
-                <div id="rr-redirects-status" class="rr-import-status"></div>
-            </div>
-        </div>
+            <!-- ===== RESULTS ===== -->
+            <?php else: ?>
+                <div class="rr-rc-card rr-rc-results-card">
+                    <div class="rr-rc-results-header">
+                        <div>
+                            <div class="rr-rc-results-title">
+                                Validatieresultaten — <?php echo esc_html( $filename ); ?>
+                            </div>
+                            <div class="rr-rc-results-meta">
+                                <?php echo count( $results ); ?> redirects geïmporteerd · Scan voltooid in <?php echo $elapsed; ?>s
+                            </div>
+                        </div>
+                        <div class="rr-rc-filter-tabs" id="rr-filter-tabs">
+                            <button class="rr-rc-filter active" data-filter="all">Alle (<?php echo count( $results ); ?>)</button>
+                            <button class="rr-rc-filter rr-filter-ok" data-filter="ok">✓ OK (<?php echo $valid_count; ?>)</button>
+                            <button class="rr-rc-filter rr-filter-warning" data-filter="warning">⚠ Waarschuwing (<?php echo $warning_count; ?>)</button>
+                            <button class="rr-rc-filter rr-filter-error" data-filter="error">✕ Fout (<?php echo $error_count; ?>)</button>
+                        </div>
+                    </div>
 
-        <!-- Filters -->
-        <div class="rr-filters">
-            <a href="?page=rankrepair-redirects-checker&filter=errors" class="rr-filter-btn <?php echo $filter === 'errors' ? 'active' : ''; ?>">
-                <span class="dashicons dashicons-warning"></span> <?php _e('Alleen Fouten', 'rankrepair'); ?>
-                <span class="count">(<?php echo esc_html($stats['issues']); ?>)</span>
-            </a>
-            <a href="?page=rankrepair-redirects-checker&filter=all" class="rr-filter-btn <?php echo $filter === 'all' ? 'active' : ''; ?>">
-                <?php _e('Alles', 'rankrepair'); ?>
-                <span class="count">(<?php echo esc_html($stats['total']); ?>)</span>
-            </a>
-            <a href="?page=rankrepair-redirects-checker&filter=unchecked" class="rr-filter-btn <?php echo $filter === 'unchecked' ? 'active' : ''; ?>">
-                <?php _e('Niet Gecontroleerd', 'rankrepair'); ?>
-            </a>
-        </div>
+                    <div class="rr-rc-table-wrap">
+                        <table class="rr-rc-table" id="rr-results-table">
+                            <thead>
+                                <tr>
+                                    <th class="rr-col-cb"><input type="checkbox" id="rr-check-all"></th>
+                                    <th>Van URL</th>
+                                    <th>Naar URL</th>
+                                    <th>Type</th>
+                                    <th>HTTP check</th>
+                                    <th>Status</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ( $results as $r ) : ?>
+                                    <tr class="rr-result-row rr-row-<?php echo esc_attr( $r['status'] ); ?>"
+                                        data-status="<?php echo esc_attr( $r['status'] ); ?>">
+                                        <td><input type="checkbox" class="rr-row-cb"></td>
+                                        <td class="rr-url-cell rr-url-source"><?php echo esc_html( $r['source'] ); ?></td>
+                                        <td class="rr-url-cell rr-url-target"><?php echo esc_html( $r['display_target'] ?? $r['target'] ); ?></td>
+                                        <td><?php echo $this->type_badge( $r['type'] ); ?></td>
+                                        <td><?php echo $this->http_check_cell( $r ); ?></td>
+                                        <td><?php echo $this->status_cell( $r ); ?></td>
+                                        <td><?php echo $this->action_btn( $r ); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
 
-        <!-- Results Table -->
-        <?php if (!empty($items)): ?>
-        <div class="rr-card">
-            <div class="rr-card-body rr-table-responsive">
-                <table class="rr-table rr-redirects-table">
-                    <thead>
-                        <tr>
-                            <th><?php _e('Status', 'rankrepair'); ?></th>
-                            <th><?php _e('Bron URL', 'rankrepair'); ?></th>
-                            <th><?php _e('Doel URL', 'rankrepair'); ?></th>
-                            <th><?php _e('Type', 'rankrepair'); ?></th>
-                            <th><?php _e('HTTP Code', 'rankrepair'); ?></th>
-                            <th><?php _e('Foutmelding', 'rankrepair'); ?></th>
-                            <th><?php _e('Laatst Gecontroleerd', 'rankrepair'); ?></th>
-                            <th><?php _e('Acties', 'rankrepair'); ?></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($items as $item): ?>
-                            <tr class="<?php echo $item['is_error'] ? 'rr-row-error' : 'rr-row-ok'; ?>" data-id="<?php echo esc_attr($item['id']); ?>">
-                                <td>
-                                    <?php if ($item['is_error']): ?>
-                                        <span class="rr-status-icon rr-status-error"><span class="dashicons dashicons-no"></span></span>
-                                    <?php elseif ($item['last_checked']): ?>
-                                        <span class="rr-status-icon rr-status-ok"><span class="dashicons dashicons-yes"></span></span>
-                                    <?php else: ?>
-                                        <span class="rr-status-icon rr-status-unknown"><span class="dashicons dashicons-minus"></span></span>
-                                    <?php endif; ?>
-                                </td>
-                                <td>
-                                    <a href="<?php echo esc_url($item['source_url']); ?>" target="_blank" class="rr-url-link">
-                                        <?php echo esc_html($item['source_url']); ?>
-                                    </a>
-                                </td>
-                                <td>
-                                    <a href="<?php echo esc_url($item['target_url']); ?>" target="_blank" class="rr-url-link">
-                                        <?php echo esc_html($item['target_url']); ?>
-                                    </a>
-                                </td>
-                                <td><span class="rr-badge rr-badge-neutral"><?php echo esc_html($item['redirect_type']); ?></span></td>
-                                <td>
-                                    <?php if ($item['status_code']): ?>
-                                        <span class="rr-http-code <?php echo $item['status_code'] >= 400 ? 'rr-http-error' : ($item['status_code'] >= 300 ? 'rr-http-redirect' : 'rr-http-ok'); ?>">
-                                            <?php echo esc_html($item['status_code']); ?>
-                                        </span>
-                                    <?php else: ?>
-                                        <span class="rr-badge rr-badge-neutral">-</span>
-                                    <?php endif; ?>
-                                </td>
-                                <td class="rr-error-message">
-                                    <?php echo esc_html($item['error_message']); ?>
-                                </td>
-                                <td>
-                                    <?php echo $item['last_checked'] ? esc_html(date('d-m-Y H:i', strtotime($item['last_checked']))) : '-'; ?>
-                                </td>
-                                <td class="rr-col-actions">
-                                    <?php if ($item['is_error']): ?>
-                                        <button class="button rr-btn-sm rr-btn-fix-redirect rr-btn-primary-sm" data-id="<?php echo esc_attr($item['id']); ?>" title="<?php _e('Redirect Activeren', 'rankrepair'); ?>">
-                                            <span class="dashicons dashicons-admin-tools"></span> <?php _e('Fix', 'rankrepair'); ?>
-                                        </button>
-                                    <?php endif; ?>
-                                    <button class="button rr-btn-sm rr-btn-delete-redirect rr-btn-danger-sm" data-id="<?php echo esc_attr($item['id']); ?>" title="<?php _e('Verwijderen', 'rankrepair'); ?>">
-                                        <span class="dashicons dashicons-trash"></span>
-                                    </button>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php elseif ($filter === 'errors'): ?>
-            <div class="rr-empty-state rr-empty-state-success">
-                <span class="dashicons dashicons-yes-alt"></span>
-                <h3><?php _e('Geen fouten gevonden!', 'rankrepair'); ?></h3>
-                <p><?php _e('Alle gecontroleerde redirects werken correct.', 'rankrepair'); ?></p>
-            </div>
-        <?php else: ?>
-            <div class="rr-empty-state">
-                <span class="dashicons dashicons-randomize"></span>
-                <h3><?php _e('Nog geen redirects geïmporteerd', 'rankrepair'); ?></h3>
-                <p><?php _e('Upload een CSV bestand of voeg handmatig redirects toe.', 'rankrepair'); ?></p>
-            </div>
-        <?php endif; ?>
+                <!-- FOOTER -->
+                <div class="rr-rc-footer">
+                    <div class="rr-rc-footer-stats">
+                        <span><span class="rr-dot rr-dot-green"></span><?php echo $valid_count; ?> geldig</span>
+                        <span><span class="rr-dot rr-dot-yellow"></span><?php echo $warning_count; ?> waarschuwingen</span>
+                        <span class="rr-footer-errors"><span class="rr-dot rr-dot-red"></span><?php echo $error_count; ?> fouten — worden overgeslagen</span>
+                    </div>
+                    <div class="rr-rc-footer-actions">
+                        <a href="<?php echo admin_url( 'admin.php?page=rankrepair-redirects-checker' ); ?>"
+                           class="rr-rc-btn rr-rc-btn-secondary">CSV opnieuw uploaden</a>
+                        <button class="rr-rc-btn rr-rc-btn-secondary" id="rr-export-btn"
+                                data-results="<?php echo esc_attr( json_encode( $results ) ); ?>">
+                            Exporteer rapport
+                        </button>
+                        <?php if ( $valid_count > 0 ) : ?>
+                            <form method="post" style="display:inline">
+                                <?php wp_nonce_field( 'rr_redirects_import' ); ?>
+                                <input type="hidden" name="rr_validated_data"
+                                       value="<?php echo esc_attr( json_encode( $results ) ); ?>">
+                                <button type="submit" name="rr_import_to_redirection" class="rr-rc-btn rr-rc-btn-green">
+                                    <span class="dashicons dashicons-migrate"></span>
+                                    Stuur <?php echo $valid_count; ?> naar Redirection plugin
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
 
+        </div>
         <?php
-        $this->render_footer();
+    }
+
+    // -------------------------------------------------------------------------
+    // Step indicator
+    // -------------------------------------------------------------------------
+
+    private function render_steps( int $step, bool $has_results ): void {
+        $steps = [
+            [ 'icon' => '📄', 'title' => '1. CSV importeren',        'sub' => 'Upload jouw redirect bestand',        'state' => $has_results ? 'done' : 'active' ],
+            [ 'icon' => '🔍', 'title' => '2. Validatie check',       'sub' => 'RankRepair controleert alles',        'state' => $has_results ? 'active' : 'waiting' ],
+            [ 'icon' => '🔧', 'title' => '3. Fouten herstellen',     'sub' => 'Optioneel, corrigeer problemen',      'state' => 'waiting' ],
+            [ 'icon' => '🚀', 'title' => '4. Stuur naar Redirection','sub' => 'Goedgekeurde redirects live zetten',  'state' => 'waiting' ],
+        ];
+        $labels = [ 'done' => 'Gereed', 'active' => 'Actieve stap', 'waiting' => 'Wacht' ];
+        ?>
+        <div class="rr-rc-steps">
+            <?php foreach ( $steps as $i => $s ) :
+                if ( $i > 0 ) echo '<div class="rr-step-divider"></div>';
+            ?>
+                <div class="rr-step rr-step-<?php echo $s['state']; ?>">
+                    <div class="rr-step-icon"><?php echo $s['icon']; ?></div>
+                    <div class="rr-step-title"><?php echo esc_html( $s['title'] ); ?></div>
+                    <div class="rr-step-sub"><?php echo esc_html( $s['sub'] ); ?></div>
+                    <span class="rr-step-label rr-step-label-<?php echo $s['state']; ?>"><?php echo $labels[ $s['state'] ]; ?></span>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php
+    }
+
+    // -------------------------------------------------------------------------
+    // Cell renderers
+    // -------------------------------------------------------------------------
+
+    private function type_badge( string $type ): string {
+        $class = $type === '302' ? 'rr-badge-amber' : 'rr-badge-blue';
+        return '<span class="rr-rc-badge-type ' . $class . '">' . esc_html( $type ) . '</span>';
+    }
+
+    private function http_check_cell( array $r ): string {
+        $code = $r['http_code'] ?? '';
+
+        if ( $r['reason'] === 'loop' || $r['reason'] === 'identical' ) {
+            return '<span class="rr-http rr-http-error">Loop</span>';
+        }
+        if ( $r['reason'] === 'chain' ) {
+            return '<span class="rr-http rr-http-warning">301 → 301</span>';
+        }
+        if ( $r['reason'] === 'invalid_url' ) {
+            return '<span class="rr-http rr-http-neutral">—</span>';
+        }
+        if ( ! $code ) {
+            return '<span class="rr-http rr-http-neutral">—</span>';
+        }
+        if ( $code >= 400 ) {
+            return '<span class="rr-http rr-http-error">' . $code . ' ' . $this->http_label( $code ) . '</span>';
+        }
+        if ( $code >= 300 ) {
+            return '<span class="rr-http rr-http-warning">' . $code . '</span>';
+        }
+        return '<span class="rr-http rr-http-ok">' . $code . ' OK</span>';
+    }
+
+    private function http_label( int $code ): string {
+        return match( $code ) {
+            404 => 'Not Found',
+            403 => 'Forbidden',
+            500 => 'Server Error',
+            default => '',
+        };
+    }
+
+    private function status_cell( array $r ): string {
+        return match( $r['reason'] ) {
+            'loop', 'identical' => '
+                <div class="rr-status-badge rr-status-error">✕ Redirect loop</div>
+                <div class="rr-status-detail rr-detail-error">✕ Van en naar URL zijn identiek</div>',
+            'chain' => '
+                <div class="rr-status-badge rr-status-warning">⚠ Redirect chain</div>
+                <div class="rr-status-detail rr-detail-warning">⚠ Redirect chain gedetecteerd</div>',
+            'duplicate' => '
+                <div class="rr-status-badge rr-status-warning">⚠ Duplicaat</div>
+                <div class="rr-status-detail rr-detail-warning">⚠ Bron URL komt meerdere keren voor</div>',
+            'invalid_url' => '
+                <div class="rr-status-badge rr-status-error">✕ Ongeldige URL</div>
+                <div class="rr-status-detail rr-detail-error">✕ URL formaat is onjuist</div>',
+            'http_404' => '
+                <div class="rr-status-badge rr-status-error">✕ Doel bestaat niet</div>
+                <div class="rr-status-detail rr-detail-error">✕ Bestemmings-URL geeft 404 terug</div>',
+            '302' => '
+                <div class="rr-status-badge rr-status-warning">⚠ Tijdelijk</div>
+                <div class="rr-status-detail rr-detail-warning">⚠ 302 tijdelijk — gebruik 301 voor SEO</div>',
+            default => '<div class="rr-status-badge rr-status-ok">✓ Geldig</div>',
+        };
+    }
+
+    private function action_btn( array $r ): string {
+        if ( $r['status'] === 'error' ) {
+            return '<button class="rr-rc-btn-action rr-btn-herstel-error">Herstel</button>';
+        }
+        if ( $r['status'] === 'warning' ) {
+            return '<button class="rr-rc-btn-action rr-btn-herstel-warning">Herstel</button>';
+        }
+        return '<button class="rr-rc-btn-action rr-btn-bewerken">Bewerken</button>';
+    }
+
+    // -------------------------------------------------------------------------
+    // CSV processing
+    // -------------------------------------------------------------------------
+
+    private function process_csv( string &$error ): bool {
+        if ( ! isset( $_FILES['redirect_csv'] ) || $_FILES['redirect_csv']['error'] !== UPLOAD_ERR_OK ) {
+            $error = 'Fout bij uploaden van het bestand.';
+            return false;
+        }
+
+        $file = $_FILES['redirect_csv']['tmp_name'];
+        if ( ! $this->parse_csv( $file, $error ) ) return false;
+
+        $this->check_loops();
+        $this->check_chains();
+        $this->check_duplicates();
+        $this->check_url_validity();
+        $this->check_302();
+        $this->check_http();
+
+        return true;
+    }
+
+    private function parse_csv( string $file, string &$error ): bool {
+        $handle = fopen( $file, 'r' );
+        if ( ! $handle ) {
+            $error = 'Kon het CSV-bestand niet openen.';
+            return false;
+        }
+
+        // Detect BOM + skip header
+        $first = fgetcsv( $handle );
+        if ( $first && isset( $first[0] ) ) {
+            $first[0] = ltrim( $first[0], "\xEF\xBB\xBF" );
+            $lower    = strtolower( trim( $first[0] ) );
+            // If not a header row, treat as data
+            if ( ! in_array( $lower, [ 'van', 'source', 'from', 'url' ], true ) ) {
+                $this->add_row( $first );
+            }
+        }
+
+        while ( ( $row = fgetcsv( $handle ) ) !== false ) {
+            $this->add_row( $row );
+        }
+        fclose( $handle );
+
+        if ( empty( $this->redirects ) ) {
+            $error = 'Geen geldige rijen gevonden in het CSV-bestand.';
+            return false;
+        }
+        return true;
+    }
+
+    private function add_row( array $row ): void {
+        if ( count( $row ) < 2 ) return;
+
+        $source = trim( $row[0] );
+        $target = trim( $row[1] );
+        $type   = isset( $row[2] ) ? trim( $row[2] ) : '301';
+
+        if ( $source === '' || $target === '' ) return;
+
+        // Normalise relative paths: keep as-is, full URLs also ok
+        $this->redirects[] = [
+            'source'         => $source,
+            'target'         => $target,
+            'display_target' => $target,
+            'type'           => in_array( $type, [ '301', '302', '307' ], true ) ? $type : '301',
+            'status'         => 'ok',
+            'reason'         => '',
+            'http_code'      => null,
+        ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation checks
+    // -------------------------------------------------------------------------
+
+    private function check_loops(): void {
+        foreach ( $this->redirects as &$r ) {
+            if ( $this->normalise( $r['source'] ) === $this->normalise( $r['target'] ) ) {
+                $r['status'] = 'error';
+                $r['reason'] = 'loop';
+            }
+        }
+        unset( $r );
+
+        // True loops via graph traversal
+        $map = [];
+        foreach ( $this->redirects as $r ) {
+            $map[ $this->normalise( $r['source'] ) ] = $this->normalise( $r['target'] );
+        }
+
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['status'] === 'error' ) continue;
+            $visited = [];
+            $cur     = $this->normalise( $r['source'] );
+            for ( $i = 0; $i < 20; $i++ ) {
+                if ( in_array( $cur, $visited, true ) ) {
+                    $r['status'] = 'error';
+                    $r['reason'] = 'loop';
+                    break;
+                }
+                $visited[] = $cur;
+                $cur = $map[ $cur ] ?? null;
+                if ( $cur === null ) break;
+            }
+        }
+        unset( $r );
+    }
+
+    private function check_chains(): void {
+        $map = [];
+        foreach ( $this->redirects as $r ) {
+            $map[ $this->normalise( $r['source'] ) ] = $r['target'];
+        }
+
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['status'] === 'error' ) continue;
+            $chain  = [ $r['source'] ];
+            $cur    = $this->normalise( $r['target'] );
+
+            while ( isset( $map[ $cur ] ) && count( $chain ) < 10 ) {
+                $chain[] = $r['target'];
+                $cur     = $this->normalise( $map[ $cur ] );
+            }
+
+            if ( count( $chain ) > 1 ) {
+                $r['status']         = 'warning';
+                $r['reason']         = 'chain';
+                $r['display_target'] = implode( ' → ', array_slice( $chain, 0, 3 ) );
+            }
+        }
+        unset( $r );
+    }
+
+    private function check_duplicates(): void {
+        $seen = [];
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['status'] === 'error' ) continue;
+            $key = $this->normalise( $r['source'] );
+            if ( isset( $seen[ $key ] ) ) {
+                $r['status'] = 'warning';
+                $r['reason'] = 'duplicate';
+            } else {
+                $seen[ $key ] = true;
+            }
+        }
+        unset( $r );
+    }
+
+    private function check_url_validity(): void {
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['status'] === 'error' ) continue;
+            // Only validate full URLs (starting with http/https); paths are always ok
+            if ( str_starts_with( $r['source'], 'http' ) && ! filter_var( $r['source'], FILTER_VALIDATE_URL ) ) {
+                $r['status'] = 'error';
+                $r['reason'] = 'invalid_url';
+            }
+            if ( str_starts_with( $r['target'], 'http' ) && ! filter_var( $r['target'], FILTER_VALIDATE_URL ) ) {
+                $r['status'] = 'error';
+                $r['reason'] = 'invalid_url';
+            }
+        }
+        unset( $r );
+    }
+
+    private function check_302(): void {
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['status'] === 'ok' && $r['type'] === '302' ) {
+                $r['status'] = 'warning';
+                $r['reason'] = '302';
+            }
+        }
+        unset( $r );
+    }
+
+    /**
+     * HTTP check: only checks the target URL for valid/warning redirects.
+     * Resolves full URLs only. Skips relative paths and limits to 80 checks.
+     */
+    private function check_http(): void {
+        $checked = 0;
+        foreach ( $this->redirects as &$r ) {
+            if ( $r['reason'] === 'loop' || $r['reason'] === 'chain' || $r['reason'] === 'invalid_url' ) continue;
+            if ( ! str_starts_with( $r['target'], 'http' ) ) continue;
+            if ( $checked >= 80 ) break;
+
+            $response = wp_remote_head( $r['target'], [
+                'timeout'     => 5,
+                'redirection' => 0,
+                'sslverify'   => false,
+            ] );
+
+            if ( is_wp_error( $response ) ) continue;
+
+            $code          = wp_remote_retrieve_response_code( $response );
+            $r['http_code'] = (int) $code;
+
+            if ( (int) $code === 404 ) {
+                $r['status'] = 'error';
+                $r['reason'] = 'http_404';
+            }
+            $checked++;
+        }
+        unset( $r );
+    }
+
+    private function normalise( string $url ): string {
+        return strtolower( rtrim( $url, '/' ) );
+    }
+
+    // -------------------------------------------------------------------------
+    // Import to Redirection plugin
+    // -------------------------------------------------------------------------
+
+    private function import_to_redirection(): array {
+        if ( ! isset( $_POST['rr_validated_data'] ) ) {
+            return [ 'success' => false, 'message' => 'Geen data gevonden.' ];
+        }
+
+        $redirects = json_decode( stripslashes( $_POST['rr_validated_data'] ), true );
+        if ( ! is_array( $redirects ) ) {
+            return [ 'success' => false, 'message' => 'Ongeldige data.' ];
+        }
+
+        if ( ! class_exists( 'Red_Item' ) ) {
+            return [ 'success' => false, 'message' => 'Redirection plugin is niet actief.' ];
+        }
+
+        $imported = 0;
+        $disabled = 0;
+
+        foreach ( $redirects as $r ) {
+            $enabled = ( $r['status'] !== 'error' );
+            $source  = parse_url( $r['source'], PHP_URL_PATH ) ?: $r['source'];
+            if ( isset( parse_url( $r['source'] )['query'] ) ) {
+                $source .= '?' . parse_url( $r['source'], PHP_URL_QUERY );
+            }
+
+            try {
+                Red_Item::create( [
+                    'url'         => $source,
+                    'action_data' => [ 'url' => $r['target'] ],
+                    'match_type'  => 'url',
+                    'action_type' => 'url',
+                    'action_code' => (int) ( $r['type'] ?? 301 ),
+                    'group_id'    => 1,
+                    'enabled'     => $enabled,
+                    'title'       => $enabled ? '' : 'AUTO-DISABLED: ' . ( $r['reason'] ?? 'fout' ),
+                ] );
+                $imported++;
+                if ( ! $enabled ) $disabled++;
+            } catch ( \Exception $e ) {
+                // skip
+            }
+        }
+
+        return [ 'success' => true, 'imported' => $imported, 'disabled' => $disabled ];
     }
 }
 

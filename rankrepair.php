@@ -65,7 +65,7 @@ final class RankRepair {
         $addon_files = [
             'meta-manager' => RR_PLUGIN_DIR . 'addons/meta-manager/class-addon-meta-manager.php',
             // Toekomstige add-ons:
-            // 'redirects-checker' => RR_PLUGIN_DIR . 'addons/redirects-checker/class-addon-redirects-checker.php',
+            'redirects-checker' => RR_PLUGIN_DIR . 'addons/redirects-checker/class-addon-redirects-checker.php',
             'image-optimizer'   => RR_PLUGIN_DIR . 'addons/image-optimizer/class-addon-image-optimizer.php',
             // 'form-tester'       => RR_PLUGIN_DIR . 'addons/form-tester/class-addon-form-tester.php',
         ];
