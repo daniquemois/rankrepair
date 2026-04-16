@@ -67,7 +67,7 @@ final class RankRepair {
             // Toekomstige add-ons:
             'redirects-checker' => RR_PLUGIN_DIR . 'addons/redirects-checker/class-addon-redirects-checker.php',
             'image-optimizer'   => RR_PLUGIN_DIR . 'addons/image-optimizer/class-addon-image-optimizer.php',
-            // 'form-tester'       => RR_PLUGIN_DIR . 'addons/form-tester/class-addon-form-tester.php',
+            'form-tester'       => RR_PLUGIN_DIR . 'addons/form-tester/class-addon-form-tester.php',
         ];
 
         foreach ($addon_files as $slug => $file) {
@@ -102,13 +102,26 @@ final class RankRepair {
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
         add_action('init', [$this, 'load_textdomain']);
 
+        // Paginatie suffix voor meta titels
+        add_filter('wpseo_title',              [$this, 'apply_pagination_suffix'], 20);
+        add_filter('pre_get_document_title',   [$this, 'apply_pagination_suffix'], 20);
+
     }
 
     public function maybe_create_tables() {
         global $wpdb;
         $table = $wpdb->prefix . 'rr_meta_data';
-        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== $table) {
+        $exists = $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table) . "'") === $table;
+        if ( ! $exists ) {
             $this->create_tables();
+            // Controleer of tabellen nu wel bestaan — toon admin notice als dat niet zo is
+            $created = $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table) . "'") === $table;
+            if ( ! $created ) {
+                $last_error = $wpdb->last_error;
+                add_action('admin_notices', function () use ($last_error) {
+                    echo '<div class="notice notice-error"><p><strong>RankRepair:</strong> Database tabellen konden niet worden aangemaakt.' . ( $last_error ? ' MySQL-fout: <code>' . esc_html($last_error) . '</code>' : '' ) . '<br>Controleer of de databasegebruiker de <code>CREATE TABLE</code> rechten heeft.</p></div>';
+                });
+            }
         } else {
             // Voer migraties altijd uit, ook voor bestaande installaties
             $this->run_migrations();
@@ -156,50 +169,95 @@ final class RankRepair {
         $charset_collate = $wpdb->get_charset_collate();
 
         // PageSpeed results cache
+        // Opmerking: dbDelta vereist twee spaties voor PRIMARY KEY en elke kolom op eigen regel.
         $table_pagespeed = $wpdb->prefix . 'rr_pagespeed_results';
         $sql_pagespeed = "CREATE TABLE $table_pagespeed (
-            id bigint(20) NOT NULL AUTO_INCREMENT,
-            url varchar(500) NOT NULL,
-            strategy varchar(10) NOT NULL DEFAULT 'mobile',
-            score_performance decimal(5,2) DEFAULT NULL,
-            score_accessibility decimal(5,2) DEFAULT NULL,
-            score_best_practices decimal(5,2) DEFAULT NULL,
-            score_seo decimal(5,2) DEFAULT NULL,
-            audits longtext DEFAULT NULL,
-            opportunities longtext DEFAULT NULL,
-            diagnostics longtext DEFAULT NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY url_strategy (url(191), strategy)
-        ) $charset_collate;";
+  id bigint(20) NOT NULL AUTO_INCREMENT,
+  url varchar(500) NOT NULL,
+  strategy varchar(10) NOT NULL DEFAULT 'mobile',
+  score_performance decimal(5,2) DEFAULT NULL,
+  score_accessibility decimal(5,2) DEFAULT NULL,
+  score_best_practices decimal(5,2) DEFAULT NULL,
+  score_seo decimal(5,2) DEFAULT NULL,
+  audits longtext DEFAULT NULL,
+  opportunities longtext DEFAULT NULL,
+  diagnostics longtext DEFAULT NULL,
+  created_at datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  KEY url_strategy (url(191), strategy)
+) $charset_collate;";
 
         // Meta titels en beschrijvingen
         $table_meta = $wpdb->prefix . 'rr_meta_data';
         $sql_meta = "CREATE TABLE $table_meta (
-            id bigint(20) NOT NULL AUTO_INCREMENT,
-            post_id bigint(20) DEFAULT NULL,
-            url varchar(500) NOT NULL,
-            current_h1 varchar(500) DEFAULT NULL,
-            current_title varchar(500) DEFAULT NULL,
-            current_description text DEFAULT NULL,
-            new_title varchar(500) DEFAULT NULL,
-            new_description text DEFAULT NULL,
-            title_length int(11) DEFAULT NULL,
-            description_length int(11) DEFAULT NULL,
-            is_duplicate_title tinyint(1) DEFAULT 0,
-            is_duplicate_description tinyint(1) DEFAULT 0,
-            status varchar(20) DEFAULT 'pending',
-            imported_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY url (url(191)),
-            KEY status (status),
-            KEY post_id (post_id)
-        ) $charset_collate;";
+  id bigint(20) NOT NULL AUTO_INCREMENT,
+  post_id bigint(20) DEFAULT NULL,
+  url varchar(500) NOT NULL,
+  current_h1 varchar(500) DEFAULT NULL,
+  current_title varchar(500) DEFAULT NULL,
+  current_description text DEFAULT NULL,
+  new_title varchar(500) DEFAULT NULL,
+  new_description text DEFAULT NULL,
+  title_length int(11) DEFAULT NULL,
+  description_length int(11) DEFAULT NULL,
+  is_duplicate_title tinyint(1) DEFAULT 0,
+  is_duplicate_description tinyint(1) DEFAULT 0,
+  status varchar(20) DEFAULT 'pending',
+  imported_at datetime DEFAULT CURRENT_TIMESTAMP,
+  updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  KEY url (url(191)),
+  KEY status (status),
+  KEY post_id (post_id)
+) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql_pagespeed);
         dbDelta($sql_meta);
+
+        // Fallback: als dbDelta de tabellen niet heeft aangemaakt (bijv. door een parseerfout),
+        // probeer dan een directe CREATE TABLE IF NOT EXISTS query.
+        if ( $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table_pagespeed) . "'") !== $table_pagespeed ) {
+            $wpdb->query("CREATE TABLE IF NOT EXISTS $table_pagespeed (
+  id bigint(20) NOT NULL AUTO_INCREMENT,
+  url varchar(500) NOT NULL,
+  strategy varchar(10) NOT NULL DEFAULT 'mobile',
+  score_performance decimal(5,2) DEFAULT NULL,
+  score_accessibility decimal(5,2) DEFAULT NULL,
+  score_best_practices decimal(5,2) DEFAULT NULL,
+  score_seo decimal(5,2) DEFAULT NULL,
+  audits longtext DEFAULT NULL,
+  opportunities longtext DEFAULT NULL,
+  diagnostics longtext DEFAULT NULL,
+  created_at datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY url_strategy (url(191), strategy)
+) $charset_collate;");
+        }
+
+        if ( $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table_meta) . "'") !== $table_meta ) {
+            $wpdb->query("CREATE TABLE IF NOT EXISTS $table_meta (
+  id bigint(20) NOT NULL AUTO_INCREMENT,
+  post_id bigint(20) DEFAULT NULL,
+  url varchar(500) NOT NULL,
+  current_h1 varchar(500) DEFAULT NULL,
+  current_title varchar(500) DEFAULT NULL,
+  current_description text DEFAULT NULL,
+  new_title varchar(500) DEFAULT NULL,
+  new_description text DEFAULT NULL,
+  title_length int(11) DEFAULT NULL,
+  description_length int(11) DEFAULT NULL,
+  is_duplicate_title tinyint(1) DEFAULT 0,
+  is_duplicate_description tinyint(1) DEFAULT 0,
+  status varchar(20) DEFAULT 'pending',
+  imported_at datetime DEFAULT CURRENT_TIMESTAMP,
+  updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY url (url(191)),
+  KEY status (status),
+  KEY post_id (post_id)
+) $charset_collate;");
+        }
     }
 
     public function register_admin_menu() {
@@ -309,6 +367,34 @@ final class RankRepair {
 
     public function load_textdomain() {
         load_plugin_textdomain('rankrepair', false, dirname(RR_PLUGIN_BASENAME) . '/languages');
+    }
+
+    /**
+     * Voeg paginatie-suffix toe aan de meta titel voor pagina 2+
+     * Werkt met Yoast (wpseo_title) en vanilla WP (pre_get_document_title).
+     * Wordt alleen toegepast als de huidige post een opgeslagen RankRepair-titel heeft.
+     */
+    public function apply_pagination_suffix( $title ) {
+        if ( is_admin() ) return $title;
+
+        $paged = (int) get_query_var( 'paged' ) ?: (int) get_query_var( 'page' );
+        if ( $paged <= 1 ) return $title;
+
+        $post_id = get_queried_object_id();
+        if ( ! $post_id ) return $title;
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'rr_meta_data';
+        $has   = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM $table WHERE post_id = %d AND status = 'applied' AND (new_title IS NOT NULL AND new_title != '')",
+            $post_id
+        ) );
+        if ( ! $has ) return $title;
+
+        $sep   = get_option( 'rr_pagination_sep',   '-' );
+        $label = get_option( 'rr_pagination_label', 'Pagina' );
+
+        return $title . ' ' . $sep . ' ' . $label . ' ' . $paged;
     }
 }
 
