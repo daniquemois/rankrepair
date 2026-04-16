@@ -24,13 +24,22 @@ class RR_Settings {
             $saved = true;
         }
 
+        $update_cleared = false;
+        if (isset($_POST['rr_check_updates']) && check_admin_referer('rr_settings_nonce')) {
+            delete_transient('rr_github_release');
+            delete_site_transient('update_plugins');
+            $update_cleared = true;
+        }
+
         // Decrypt for display
-        $pagespeed_key = rr_decrypt_key(get_option('rr_pagespeed_api_key', ''));
-        $seranking_key = rr_decrypt_key(get_option('rr_seranking_api_key', ''));
-        $gemini_key    = rr_decrypt_key(get_option('rr_gemini_api_key', ''));
-        $gemini_prompt = get_option('rr_gemini_prompt', '');
-        $ai_provider   = get_option('rr_ai_provider', 'google');
-        $ai_model      = get_option('rr_ai_model', '');
+        $pagespeed_key  = rr_decrypt_key(get_option('rr_pagespeed_api_key', ''));
+        $seranking_key  = rr_decrypt_key(get_option('rr_seranking_api_key', ''));
+        $gemini_key     = rr_decrypt_key(get_option('rr_gemini_api_key', ''));
+        $gemini_prompt  = get_option('rr_gemini_prompt', '');
+        $ai_provider    = get_option('rr_ai_provider', 'google');
+        $ai_model       = get_option('rr_ai_model', '');
+        $pagination_sep = get_option('rr_pagination_sep', '-');
+        $pagination_lbl = get_option('rr_pagination_label', 'Pagina');
 
         ?>
         <div class="wrap rr-wrap">
@@ -46,6 +55,9 @@ class RR_Settings {
 
             <?php if ($saved): ?>
             <div class="notice notice-success is-dismissible" style="margin:16px 0 0"><p><?php _e('Instellingen opgeslagen!', 'rankrepair'); ?></p></div>
+            <?php endif; ?>
+            <?php if ($update_cleared): ?>
+            <div class="notice notice-success is-dismissible" style="margin:16px 0 0"><p><?php _e('Update-cache gewist. Ga naar <a href="' . esc_url(admin_url('plugins.php')) . '">Plugins</a> om de update te zien.', 'rankrepair'); ?></p></div>
             <?php endif; ?>
 
             <form method="post" action="">
@@ -163,9 +175,52 @@ class RR_Settings {
                     </div>
                 </div>
 
+                <!-- Paginatie -->
+                <div class="rr-card" style="margin-top:20px">
+                    <div class="rr-card-header">
+                        <h2><span class="dashicons dashicons-admin-page"></span> <?php _e('Paginatie suffix', 'rankrepair'); ?></h2>
+                    </div>
+                    <div class="rr-card-body">
+                        <table class="form-table">
+                            <tr>
+                                <th scope="row"><?php _e('Scheidingsteken', 'rankrepair'); ?></th>
+                                <td>
+                                    <?php foreach (['-' => '— streepje', '|' => '| pipe', '•' => '• bol', '*' => '* ster'] as $val => $label): ?>
+                                        <label style="margin-right:16px">
+                                            <input type="radio" name="rr_pagination_sep"
+                                                   value="<?php echo esc_attr($val); ?>"
+                                                   <?php checked($pagination_sep, $val); ?>>
+                                            <code><?php echo esc_html($val); ?></code> <?php echo esc_html($label); ?>
+                                        </label>
+                                    <?php endforeach; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">
+                                    <label for="rr_pagination_label"><?php _e('Label', 'rankrepair'); ?></label>
+                                </th>
+                                <td>
+                                    <input type="text" id="rr_pagination_label" name="rr_pagination_label"
+                                           value="<?php echo esc_attr($pagination_lbl); ?>" class="small-text"
+                                           placeholder="Pagina">
+                                    <p class="description">
+                                        <?php _e('Voorbeeld resultaat: ', 'rankrepair'); ?>
+                                        <strong id="rr-pagination-preview">
+                                            Blog titel <?php echo esc_html($pagination_sep); ?> <?php echo esc_html($pagination_lbl); ?> 2
+                                        </strong>
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+
                 <p class="submit">
                     <input type="submit" name="rr_save_settings" class="button-primary rr-btn-primary"
                            value="<?php _e('Instellingen Opslaan', 'rankrepair'); ?>">
+                    <input type="submit" name="rr_check_updates" class="button-secondary"
+                           value="<?php _e('Controleer op updates', 'rankrepair'); ?>"
+                           style="margin-left:8px;">
                 </p>
             </form>
         </div>
@@ -174,7 +229,7 @@ class RR_Settings {
 
     private function save_settings() {
         // Non-key fields saved as plain text
-        $plain_fields = ['rr_ai_provider', 'rr_ai_model', 'rr_gemini_prompt'];
+        $plain_fields = ['rr_ai_provider', 'rr_ai_model', 'rr_gemini_prompt', 'rr_pagination_sep', 'rr_pagination_label'];
         foreach ($plain_fields as $field) {
             if (isset($_POST[$field])) {
                 $cb = ($field === 'rr_gemini_prompt') ? 'sanitize_textarea_field' : 'sanitize_text_field';

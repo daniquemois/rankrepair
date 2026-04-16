@@ -66,7 +66,7 @@ class RR_Updater {
             return null;
         }
 
-        set_transient( $cache_key, $release, 12 * HOUR_IN_SECONDS );
+        set_transient( $cache_key, $release, HOUR_IN_SECONDS );
         $this->release_cache = $release;
 
         return $release;
