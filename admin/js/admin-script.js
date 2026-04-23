@@ -218,6 +218,41 @@
         $('.rr-notice-success').not('.rr-notice-persistent').fadeOut(500);
     }, 5000);
 
+    // Add-on aan/uit toggle (Dashboard)
+    $(document).on('change', '.rr-addon-toggle', function() {
+        var $toggle  = $(this);
+        var slug     = $toggle.data('slug');
+        var enabled  = $toggle.is(':checked');
+        var $row     = $toggle.closest('.rr-addon-row');
+        var $sub     = $row.find('.rr-addon-row-sub');
+        var wasText  = $sub.text();
+
+        $toggle.prop('disabled', true);
+        $sub.text(enabled ? 'Inschakelen...' : 'Uitschakelen...');
+
+        $.post(rrAdmin.ajaxUrl, {
+            action:  'rr_toggle_addon',
+            nonce:   rrAdmin.nonce,
+            slug:    slug,
+            enabled: enabled ? '1' : '0'
+        }, function(response) {
+            $toggle.prop('disabled', false);
+            if (response.success) {
+                $row.toggleClass('rr-addon-row--off', !enabled);
+                // Reload page om menu-items bij te werken
+                window.location.reload();
+            } else {
+                $toggle.prop('checked', !enabled);
+                $sub.text(wasText);
+                alert((response.data && response.data.message) || 'Fout bij wisselen.');
+            }
+        }).fail(function() {
+            $toggle.prop('disabled', false).prop('checked', !enabled);
+            $sub.text(wasText);
+            alert('Verbindingsfout.');
+        });
+    });
+
     // Settings: Reset AI prompt to default
     if (typeof rrSettings !== 'undefined') {
         var $resetBtn = document.getElementById('rr-reset-prompt');
@@ -229,6 +264,21 @@
                 }
             });
         }
+    }
+
+    // Settings: Live preview paginatie suffix
+    var $preview = document.getElementById('rr-pagination-preview');
+    if ($preview) {
+        function updatePaginationPreview() {
+            var sep   = (document.querySelector('input[name="rr_pagination_sep"]:checked') || {}).value || '-';
+            var label = (document.getElementById('rr_pagination_label') || {}).value || 'Pagina';
+            $preview.textContent = 'Blog titel ' + sep + ' ' + label + ' 2';
+        }
+        document.querySelectorAll('input[name="rr_pagination_sep"]').forEach(function(el) {
+            el.addEventListener('change', updatePaginationPreview);
+        });
+        var $labelInput = document.getElementById('rr_pagination_label');
+        if ($labelInput) $labelInput.addEventListener('input', updatePaginationPreview);
     }
 
 })(jQuery);

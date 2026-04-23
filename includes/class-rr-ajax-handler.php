@@ -35,6 +35,27 @@ class RR_Ajax_Handler {
         // CSV upload & mapping
         add_action('wp_ajax_rr_parse_upload_csv',  [$this, 'parse_upload_csv']);
         add_action('wp_ajax_rr_apply_upload_csv',  [$this, 'apply_upload_csv']);
+
+        // Addon aan/uit
+        add_action('wp_ajax_rr_toggle_addon', [$this, 'toggle_addon']);
+    }
+
+    public function toggle_addon() {
+        $this->verify_nonce();
+
+        $slug    = isset($_POST['slug'])    ? sanitize_key($_POST['slug'])             : '';
+        $enabled = isset($_POST['enabled']) ? (sanitize_text_field($_POST['enabled']) === '1') : false;
+        $available = ['meta-manager', 'structured-data', 'redirects-checker', 'image-optimizer', 'form-tester'];
+        if (!in_array($slug, $available, true)) {
+            wp_send_json_error(['message' => __('Onbekende addon.', 'rankrepair')]);
+        }
+
+        update_option('rr_addon_' . $slug . '_enabled', $enabled ? '1' : '0');
+
+        wp_send_json_success([
+            'enabled' => $enabled,
+            'message' => $enabled ? __('Addon ingeschakeld.', 'rankrepair') : __('Addon uitgeschakeld.', 'rankrepair'),
+        ]);
     }
 
     private function verify_nonce() {
@@ -47,6 +68,49 @@ class RR_Ajax_Handler {
     }
 
     /**
+     * Parse een composite entity-ID zoals "post:123" of "term:45".
+     * Fallback: als er geen prefix is, behandelen we het als post-ID (backwards compat).
+     * Returns ['type' => 'post'|'term', 'id' => int] of null bij invalid input.
+     */
+    private function parse_entity_id($raw): ?array {
+        if (is_numeric($raw)) {
+            return ['type' => 'post', 'id' => (int) $raw];
+        }
+        if (!is_string($raw) || !str_contains($raw, ':')) return null;
+        [$type, $id] = explode(':', $raw, 2);
+        $type = sanitize_key($type);
+        $id   = (int) $id;
+        if (!in_array($type, ['post', 'term'], true) || $id <= 0) return null;
+        return ['type' => $type, 'id' => $id];
+    }
+
+    /**
+     * Schrijf Yoast/Rank Math title/description naar de juiste entity.
+     * Werkt voor posts én termen.
+     */
+    private function write_entity_meta(string $type, int $id, ?string $title, ?string $desc): void {
+        if ($type === 'post') {
+            if ($title !== null) {
+                if (defined('WPSEO_VERSION'))     update_post_meta($id, '_yoast_wpseo_title',   $title);
+                if (defined('RANK_MATH_VERSION')) update_post_meta($id, 'rank_math_title',      $title);
+            }
+            if ($desc !== null) {
+                if (defined('WPSEO_VERSION'))     update_post_meta($id, '_yoast_wpseo_metadesc', $desc);
+                if (defined('RANK_MATH_VERSION')) update_post_meta($id, 'rank_math_description', $desc);
+            }
+        } elseif ($type === 'term') {
+            if ($title !== null) {
+                if (defined('WPSEO_VERSION'))     update_term_meta($id, '_yoast_wpseo_title',   $title);
+                if (defined('RANK_MATH_VERSION')) update_term_meta($id, 'rank_math_title',      $title);
+            }
+            if ($desc !== null) {
+                if (defined('WPSEO_VERSION'))     update_term_meta($id, '_yoast_wpseo_metadesc', $desc);
+                if (defined('RANK_MATH_VERSION')) update_term_meta($id, 'rank_math_description', $desc);
+            }
+        }
+    }
+
+    /**
      * Haal H1s op via een echte HTTP-request naar de frontend.
      * Als de loopback request mislukt, valt terug op server-side extractie
      * (post_content blocks + Elementor widgets).
@@ -54,12 +118,16 @@ class RR_Ajax_Handler {
     public function fetch_h1s() {
         $this->verify_nonce();
 
-        $post_id = isset($_POST['post_id']) ? absint($_POST['post_id']) : 0;
-        if (!$post_id) {
-            wp_send_json_error(['message' => 'Ongeldig post ID']);
+        $raw = $_POST['post_id'] ?? '';
+        $parsed = $this->parse_entity_id($raw);
+        if (!$parsed) {
+            wp_send_json_error(['message' => 'Ongeldig ID']);
         }
 
-        $url = get_permalink($post_id);
+        $url = ($parsed['type'] === 'post')
+            ? get_permalink($parsed['id'])
+            : get_term_link($parsed['id']);
+        if (is_wp_error($url)) $url = '';
         $h1s = [];
 
         // Probeer frontend HTML op te halen
@@ -258,18 +326,29 @@ class RR_Ajax_Handler {
 
             if (empty($url)) continue;
 
+            // Detecteer paginatie-URL: /page/N/ patroon
+            $page_num = 0;
+            $resolved_url = $url;
+            if (preg_match('#/page/(\d+)/?$#i', $url, $m)) {
+                $page_num     = (int) $m[1];
+                $resolved_url = preg_replace('#/page/\d+/?$#i', '/', $url);
+                $resolved_url = rtrim($resolved_url, '/') . '/';
+            }
+
             $title_len = mb_strlen($title);
             $desc_len = mb_strlen($description);
 
             if (!empty($title)) {
-                $all_titles[$title][] = $url;
+                $all_titles[$title][] = $resolved_url;
             }
             if (!empty($description)) {
-                $all_descriptions[$description][] = $url;
+                $all_descriptions[$description][] = $resolved_url;
             }
 
             $rows[] = [
-                'url'                => $url,
+                'url'                => $resolved_url,
+                'original_url'       => $url,
+                'page_num'           => $page_num,
                 'title'              => $title,
                 'description'        => $description,
                 'title_length'       => $title_len,
@@ -278,16 +357,28 @@ class RR_Ajax_Handler {
         }
         fclose($handle);
 
+        // Dedupleer op resolved URL: als dezelfde parent al eerder in de CSV staat, sla de paginatie-rij over
+        $seen_urls = [];
+        $rows = array_filter($rows, function($r) use (&$seen_urls) {
+            if (isset($seen_urls[$r['url']])) return false;
+            $seen_urls[$r['url']] = true;
+            return true;
+        });
+
         // Detecteer duplicaten
         $dup_titles = array_filter($all_titles, function($urls) { return count($urls) > 1; });
         $dup_descs = array_filter($all_descriptions, function($urls) { return count($urls) > 1; });
 
         // Sla op in database
+        $paginated_count = 0;
         foreach ($rows as $row_data) {
             $is_dup_title = isset($dup_titles[$row_data['title']]) ? 1 : 0;
-            $is_dup_desc = isset($dup_descs[$row_data['description']]) ? 1 : 0;
+            $is_dup_desc  = isset($dup_descs[$row_data['description']]) ? 1 : 0;
 
-            $wpdb->insert($table, [
+            // Probeer post_id te vinden op basis van URL
+            $post_id = url_to_postid($row_data['url']);
+
+            $insert = [
                 'url'                      => $row_data['url'],
                 'current_title'            => $row_data['title'],
                 'current_description'      => $row_data['description'],
@@ -296,18 +387,42 @@ class RR_Ajax_Handler {
                 'is_duplicate_title'       => $is_dup_title,
                 'is_duplicate_description' => $is_dup_desc,
                 'status'                   => 'pending',
-            ]);
+            ];
+            if ($post_id) {
+                $insert['post_id'] = $post_id;
+            }
+
+            if ($row_data['page_num'] > 0) {
+                $paginated_count++;
+            }
+
+            // Upsert op URL zodat herhaald importeren veilig is
+            $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE url = %s", $row_data['url']));
+            if ($existing) {
+                $wpdb->update($table, $insert, ['url' => $row_data['url']]);
+            } else {
+                $wpdb->insert($table, $insert);
+            }
             $imported++;
         }
 
+        $msg = sprintf(
+            __('%d pagina\'s geïmporteerd. %d dubbele titels, %d dubbele beschrijvingen gevonden.', 'rankrepair'),
+            $imported, count($dup_titles), count($dup_descs)
+        );
+        if ($paginated_count > 0) {
+            $msg .= ' ' . sprintf(
+                __('%d paginatie-URL\'s automatisch herleid naar hun bovenliggende pagina.', 'rankrepair'),
+                $paginated_count
+            );
+        }
+
         wp_send_json_success([
-            'message'  => sprintf(
-                __('%d pagina\'s geïmporteerd. %d dubbele titels, %d dubbele beschrijvingen gevonden.', 'rankrepair'),
-                $imported, count($dup_titles), count($dup_descs)
-            ),
+            'message'                => $msg,
             'imported'               => $imported,
             'duplicate_titles'       => count($dup_titles),
             'duplicate_descriptions' => count($dup_descs),
+            'paginated'              => $paginated_count,
         ]);
     }
 
@@ -317,28 +432,30 @@ class RR_Ajax_Handler {
     public function save_meta() {
         $this->verify_nonce();
 
-        // data-id in de render is altijd de WordPress post_id (load_live_items zet 'id' => $raw->ID)
-        $post_id         = isset($_POST['id']) ? absint($_POST['id']) : 0;
+        $parsed = $this->parse_entity_id($_POST['id'] ?? '');
+        if (!$parsed) {
+            wp_send_json_error(['message' => __('Ongeldig ID.', 'rankrepair')]);
+            return;
+        }
+        $entity_type = $parsed['type'];
+        $entity_id   = $parsed['id'];
+        $post_id     = $entity_id; // backwards compat variabele
+
         $new_title       = isset($_POST['new_title'])       ? sanitize_text_field($_POST['new_title'])           : '';
         $new_description = isset($_POST['new_description']) ? sanitize_textarea_field($_POST['new_description']) : '';
         $current_h1      = (isset($_POST['current_h1']) && $_POST['current_h1'] !== '')
                            ? sanitize_text_field($_POST['current_h1'])
                            : null;
 
-        if (!$post_id) {
-            wp_send_json_error(['message' => __('Ongeldig ID.', 'rankrepair')]);
-            return;
-        }
-
         global $wpdb;
         $table = $wpdb->prefix . 'rr_meta_data';
 
-        // H1 opslaan via ACF hero sub-field
-        if ($current_h1 !== null && function_exists('have_rows') && have_rows('content', $post_id)) {
-            while (have_rows('content', $post_id)) {
+        // H1 opslaan via ACF hero sub-field (alleen voor posts)
+        if ($entity_type === 'post' && $current_h1 !== null && function_exists('have_rows') && have_rows('content', $entity_id)) {
+            while (have_rows('content', $entity_id)) {
                 the_row();
                 if (get_row_layout() === 'hero') {
-                    update_sub_field('title', $current_h1, $post_id);
+                    update_sub_field('title', $current_h1, $entity_id);
                     break;
                 }
             }
@@ -348,19 +465,25 @@ class RR_Ajax_Handler {
             'new_title'       => $new_title,
             'new_description' => $new_description,
             'status'          => 'applied',
+            'entity_type'     => $entity_type,
         ];
         if ($current_h1 !== null) {
             $data['current_h1'] = json_encode([$current_h1], JSON_UNESCAPED_UNICODE);
         }
 
-        // Upsert op post_id
-        $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE post_id = %d", $post_id));
+        // Upsert op (entity_type, post_id)
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM $table WHERE post_id = %d AND entity_type = %s",
+            $entity_id, $entity_type
+        ));
         if ($existing) {
-            $result = $wpdb->update($table, $data, ['post_id' => $post_id]);
+            $result = $wpdb->update($table, $data, ['id' => $existing]);
         } else {
+            $url = ($entity_type === 'post') ? get_permalink($entity_id) : (get_term_link($entity_id) ?: '');
+            if (is_wp_error($url)) $url = '';
             $result = $wpdb->insert($table, array_merge($data, [
-                'post_id' => $post_id,
-                'url'     => get_permalink($post_id),
+                'post_id' => $entity_id,
+                'url'     => $url,
             ]));
         }
 
@@ -369,18 +492,43 @@ class RR_Ajax_Handler {
             return;
         }
 
-        // Schrijf direct naar Yoast SEO / Rank Math zodat de live pagina direct bijgewerkt is
-        // en de velden op reload de nieuwe waarden tonen (load_live_items leest live Yoast-data)
-        if (!empty($new_title)) {
-            if (defined('WPSEO_VERSION'))      update_post_meta($post_id, '_yoast_wpseo_title',    $new_title);
-            if (defined('RANK_MATH_VERSION'))  update_post_meta($post_id, 'rank_math_title',        $new_title);
-        }
-        if (!empty($new_description)) {
-            if (defined('WPSEO_VERSION'))      update_post_meta($post_id, '_yoast_wpseo_metadesc',  $new_description);
-            if (defined('RANK_MATH_VERSION'))  update_post_meta($post_id, 'rank_math_description',  $new_description);
+        // Schrijf direct naar Yoast / Rank Math (post of term)
+        $this->write_entity_meta(
+            $entity_type,
+            $entity_id,
+            !empty($new_title)       ? $new_title       : null,
+            !empty($new_description) ? $new_description : null
+        );
+
+        // Verse stats voor realtime UI-update
+        $stats     = [];
+        $item_data = null;
+        $addon     = rankrepair()->get_addon('meta-manager');
+        if ($addon) {
+            $all_items = $addon->load_live_items();
+            $stats     = $addon->compute_stats($all_items);
+            foreach ($all_items as $row) {
+                if ($row['entity_type'] === $entity_type && (int) $row['post_id'] === $entity_id) {
+                    $item_data = [
+                        'id'                       => $row['id'], // composite "post:123" / "term:45"
+                        'entity_type'              => $row['entity_type'],
+                        'current_title'            => $row['current_title'],
+                        'current_description'      => $row['current_description'],
+                        'title_length'             => (int) $row['title_length'],
+                        'description_length'       => (int) $row['description_length'],
+                        'is_duplicate_title'       => (int) $row['is_duplicate_title'],
+                        'is_duplicate_description' => (int) $row['is_duplicate_description'],
+                    ];
+                    break;
+                }
+            }
         }
 
-        wp_send_json_success(['message' => __('Opgeslagen!', 'rankrepair')]);
+        wp_send_json_success([
+            'message' => __('Opgeslagen!', 'rankrepair'),
+            'stats'   => $stats,
+            'item'    => $item_data,
+        ]);
     }
 
     /**
@@ -464,15 +612,18 @@ class RR_Ajax_Handler {
     public function delete_meta() {
         $this->verify_nonce();
 
-        $post_id = isset($_POST['id']) ? absint($_POST['id']) : 0;
-        if (!$post_id) {
+        $parsed = $this->parse_entity_id($_POST['id'] ?? '');
+        if (!$parsed) {
             wp_send_json_error(['message' => __('Ongeldig ID.', 'rankrepair')]);
             return;
         }
 
         global $wpdb;
         $table = $wpdb->prefix . 'rr_meta_data';
-        $wpdb->delete($table, ['post_id' => $post_id]);
+        $wpdb->delete($table, [
+            'post_id'     => $parsed['id'],
+            'entity_type' => $parsed['type'],
+        ]);
 
         wp_send_json_success(['message' => __('Verwijderd.', 'rankrepair')]);
     }
@@ -807,8 +958,8 @@ class RR_Ajax_Handler {
     public function gemini_generate() {
         $this->verify_nonce();
 
-        $post_id = isset($_POST['id']) ? absint($_POST['id']) : 0;
-        if (!$post_id) {
+        $parsed = $this->parse_entity_id($_POST['id'] ?? '');
+        if (!$parsed) {
             wp_send_json_error(['message' => __('Ongeldig ID.', 'rankrepair')]);
         }
 
@@ -817,8 +968,7 @@ class RR_Ajax_Handler {
             wp_send_json_error(['message' => __('Geen Gemini API key ingesteld. Ga naar Instellingen.', 'rankrepair')]);
         }
 
-        // Bouw meta-array live op uit WordPress — geen DB-afhankelijkheid
-        $meta = $this->build_meta_from_post($post_id);
+        $meta = $this->build_meta($parsed['type'], $parsed['id']);
         if (!$meta) {
             wp_send_json_error(['message' => __('Pagina niet gevonden.', 'rankrepair')]);
         }
@@ -842,9 +992,10 @@ class RR_Ajax_Handler {
      */
     public function gemini_generate_bulk() {
         $this->verify_nonce();
+        set_time_limit(120);
 
-        $post_ids = isset($_POST['ids']) ? array_map('absint', (array) $_POST['ids']) : [];
-        if (empty($post_ids)) {
+        $raw_ids = isset($_POST['ids']) ? (array) $_POST['ids'] : [];
+        if (empty($raw_ids)) {
             wp_send_json_error(['message' => __('Geen rijen opgegeven.', 'rankrepair')]);
         }
 
@@ -853,45 +1004,78 @@ class RR_Ajax_Handler {
             wp_send_json_error(['message' => __('Geen Gemini API key ingesteld. Ga naar Instellingen.', 'rankrepair')]);
         }
 
-        $results     = [];
-        $errors      = [];
-        $first_error = null;
+        $fields = isset($_POST['fields']) ? array_map('sanitize_key', (array) $_POST['fields']) : ['title', 'desc'];
+        $fields = array_values(array_intersect(['title', 'desc'], $fields));
+        if (empty($fields)) $fields = ['title', 'desc'];
 
-        foreach ($post_ids as $post_id) {
-            $meta = $this->build_meta_from_post($post_id);
-            if (!$meta) {
-                $errors[] = $post_id;
+        $results        = [];
+        $errors_detail  = [];
+        $first_error    = null;
+        $throttle_us    = 4100000; // 4.1 s tussen calls — Gemini free tier = 15 rpm (1 call/4s)
+
+        foreach ($raw_ids as $raw_id) {
+            $parsed = $this->parse_entity_id($raw_id);
+            if (!$parsed) {
+                $errors_detail[] = ['id' => $raw_id, 'name' => (string)$raw_id, 'reason' => 'Ongeldig ID'];
                 continue;
             }
-            $result = $this->call_gemini_for_meta($meta, $api_key);
-            if (is_wp_error($result)) {
-                if ($first_error === null) {
-                    $first_error = $result->get_error_message();
+            $composite_id = $parsed['type'] . ':' . $parsed['id'];
+
+            $meta = $this->build_meta($parsed['type'], $parsed['id']);
+            if (!$meta) {
+                $errors_detail[] = ['id' => $composite_id, 'name' => $composite_id, 'reason' => 'Pagina niet gevonden'];
+                continue;
+            }
+
+            $attempts = 0;
+            $result   = null;
+            while ($attempts < 3) {
+                $attempts++;
+                $result = $this->call_gemini_for_meta($meta, $api_key);
+                if (!is_wp_error($result)) break;
+                $msg = $result->get_error_message();
+                if (preg_match('/\b(429|RESOURCE_EXHAUSTED|rate.?limit|503|500|overloaded)\b/i', $msg)) {
+                    sleep(pow(2, $attempts));
+                    continue;
                 }
-                $errors[] = $post_id;
+                break;
+            }
+
+            $display_name = $meta['name'] ?? ($meta['url'] ?? $composite_id);
+
+            if (is_wp_error($result)) {
+                if ($first_error === null) $first_error = $result->get_error_message();
+                $errors_detail[] = [
+                    'id'     => $composite_id,
+                    'name'   => $display_name,
+                    'reason' => $result->get_error_message(),
+                ];
             } else {
                 $results[] = [
-                    'id'            => $post_id,
-                    'title'         => $result['title'],
-                    'description'   => $result['description'],
+                    'id'            => $composite_id,
+                    'entity_type'   => $parsed['type'],
+                    'title'         => in_array('title', $fields, true) ? $result['title']       : '',
+                    'description'   => in_array('desc',  $fields, true) ? $result['description'] : '',
                     'current_title' => $meta['current_title'] ?? '',
                     'current_desc'  => $meta['current_description'] ?? '',
-                    'name'          => get_the_title($post_id) ?: $meta['url'] ?? ('Pagina ' . $post_id),
+                    'name'          => $display_name,
+                    'fields'        => $fields,
                 ];
             }
-            usleep(300000); // 300 ms throttle tussen API-calls
+            usleep($throttle_us);
         }
 
-        $message = sprintf(__('%d gegenereerd, %d mislukt.', 'rankrepair'), count($results), count($errors));
+        $message = sprintf(__('%d gegenereerd, %d mislukt.', 'rankrepair'), count($results), count($errors_detail));
         if ($first_error) {
             $message .= ' Fout: ' . $first_error;
         }
 
         wp_send_json_success([
-            'results'     => $results,
-            'errors'      => $errors,
-            'message'     => $message,
-            'first_error' => $first_error,
+            'results'       => $results,
+            'errors'        => array_column($errors_detail, 'id'),
+            'errors_detail' => $errors_detail,
+            'message'       => $message,
+            'first_error'   => $first_error,
         ]);
     }
 
@@ -911,23 +1095,80 @@ class RR_Ajax_Handler {
         $table = $wpdb->prefix . 'rr_meta_data';
         $saved = 0;
 
-        foreach ($items as $item) {
-            $row_id = absint($item['id']    ?? 0);
-            $title  = sanitize_text_field($item['title'] ?? '');
-            $desc   = sanitize_textarea_field($item['desc']  ?? '');
-            if (!$row_id) continue;
+        $saved_keys = []; // map van 'type:id' voor response filtering
 
-            $wpdb->update($table, [
-                'new_title'       => $title,
-                'new_description' => $desc,
-                'status'          => 'updated',
-            ], ['id' => $row_id]);
+        foreach ($items as $item) {
+            $parsed = $this->parse_entity_id($item['id'] ?? '');
+            if (!$parsed) continue;
+            $entity_type = $parsed['type'];
+            $entity_id   = $parsed['id'];
+
+            $has_title = array_key_exists('title', $item);
+            $has_desc  = array_key_exists('desc',  $item);
+            if (!$has_title && !$has_desc) continue;
+
+            $new_title = $has_title ? sanitize_text_field($item['title'])     : null;
+            $new_desc  = $has_desc  ? sanitize_textarea_field($item['desc'])  : null;
+
+            $data = [
+                'status'      => 'applied',
+                'entity_type' => $entity_type,
+            ];
+            if ($has_title) $data['new_title']       = $new_title;
+            if ($has_desc)  $data['new_description'] = $new_desc;
+
+            $existing = $wpdb->get_var($wpdb->prepare(
+                "SELECT id FROM $table WHERE post_id = %d AND entity_type = %s",
+                $entity_id, $entity_type
+            ));
+            if ($existing) {
+                $wpdb->update($table, $data, ['id' => $existing]);
+            } else {
+                $url = ($entity_type === 'post') ? get_permalink($entity_id) : (get_term_link($entity_id) ?: '');
+                if (is_wp_error($url)) $url = '';
+                $wpdb->insert($table, array_merge($data, [
+                    'post_id' => $entity_id,
+                    'url'     => $url,
+                ]));
+            }
+
+            // Schrijf naar Yoast/Rank Math (post of term)
+            $this->write_entity_meta($entity_type, $entity_id, $new_title, $new_desc);
+
+            $saved_keys[] = $entity_type . ':' . $entity_id;
             $saved++;
+        }
+
+        // Verse stats + row-data voor realtime UI-update
+        $addon      = rankrepair()->get_addon('meta-manager');
+        $stats      = [];
+        $items_data = [];
+        if ($addon) {
+            $all_items = $addon->load_live_items();
+            $stats     = $addon->compute_stats($all_items);
+
+            foreach ($all_items as $row) {
+                $key = $row['entity_type'] . ':' . $row['post_id'];
+                if (in_array($key, $saved_keys, true)) {
+                    $items_data[] = [
+                        'id'                       => $row['id'], // composite
+                        'entity_type'              => $row['entity_type'],
+                        'current_title'            => $row['current_title'],
+                        'current_description'      => $row['current_description'],
+                        'title_length'             => (int) $row['title_length'],
+                        'description_length'       => (int) $row['description_length'],
+                        'is_duplicate_title'       => (int) $row['is_duplicate_title'],
+                        'is_duplicate_description' => (int) $row['is_duplicate_description'],
+                    ];
+                }
+            }
         }
 
         wp_send_json_success([
             'saved'   => $saved,
             'message' => sprintf(_n('%d pagina opgeslagen.', '%d pagina\'s opgeslagen.', $saved, 'rankrepair'), $saved),
+            'stats'   => $stats,
+            'items'   => $items_data,
         ]);
     }
 
@@ -935,51 +1176,133 @@ class RR_Ajax_Handler {
      * Bouw een meta-array op vanuit WordPress live data (vervangt DB-lookup)
      */
     private function build_meta_from_post(int $post_id): ?array {
-        $wp_post = get_post($post_id);
-        if (!$wp_post) return null;
+        return $this->build_meta('post', $post_id);
+    }
 
-        $url   = get_permalink($post_id);
-        $title = get_post_meta($post_id, '_yoast_wpseo_title', true) ?? '';
-        $desc  = get_post_meta($post_id, '_yoast_wpseo_metadesc', true) ?? '';
+    /**
+     * Bouw meta-array voor een post OF term. Retourneert null als entity niet bestaat.
+     */
+    private function build_meta(string $type, int $id): ?array {
+        $replacer     = (defined('WPSEO_VERSION') && class_exists('WPSEO_Replace_Vars')) ? new WPSEO_Replace_Vars() : null;
+        $wpseo_titles = get_option('wpseo_titles', []);
 
-        if (defined('WPSEO_VERSION') && class_exists('WPSEO_Replace_Vars')) {
-            $replacer = new WPSEO_Replace_Vars();
-            if (!empty($title)) $title = $replacer->replace($title, $wp_post);
-            if (!empty($desc))  $desc  = $replacer->replace($desc,  $wp_post);
-        }
+        if ($type === 'post') {
+            $wp_post = get_post($id);
+            if (!$wp_post) return null;
 
-        if (empty($desc)) {
-            if (function_exists('YoastSEO')) {
+            $url   = get_permalink($id);
+            $title = get_post_meta($id, '_yoast_wpseo_title',   true) ?: '';
+            $desc  = get_post_meta($id, '_yoast_wpseo_metadesc', true) ?: '';
+
+            if ($replacer) {
+                if (!empty($title)) $title = $replacer->replace($title, $wp_post);
+                if (!empty($desc))  $desc  = $replacer->replace($desc,  $wp_post);
+            }
+            if ($replacer && (empty($title) || empty($desc))) {
+                $pt = $wp_post->post_type;
+                if (empty($title) && !empty($wpseo_titles["title-{$pt}"])) {
+                    $title = $replacer->replace($wpseo_titles["title-{$pt}"], $wp_post);
+                }
+                if (empty($desc) && !empty($wpseo_titles["metadesc-{$pt}"])) {
+                    $desc = $replacer->replace($wpseo_titles["metadesc-{$pt}"], $wp_post);
+                }
+            }
+            if ((empty($title) || empty($desc)) && function_exists('YoastSEO')) {
                 try {
-                    $ms = YoastSEO()->meta->for_post($post_id);
-                    if ($ms && !empty($ms->description)) $desc = $ms->description;
+                    $ms = YoastSEO()->meta->for_post($id);
+                    if ($ms) {
+                        if (empty($title) && !empty($ms->title))       $title = $ms->title;
+                        if (empty($desc)  && !empty($ms->description)) $desc  = $ms->description;
+                    }
                 } catch (Exception $e) {}
             }
             if (empty($desc)) {
-                $excerpt = get_the_excerpt($post_id);
+                $excerpt = get_the_excerpt($id);
                 if (!empty($excerpt)) $desc = $excerpt;
             }
+
+            return [
+                'entity_type'         => 'post',
+                'entity_id'           => $id,
+                'post_id'             => $id,
+                'url'                 => $url,
+                'current_title'       => $title,
+                'current_description' => $desc,
+                'wp_entity'           => $wp_post,
+                'name'                => $wp_post->post_title,
+            ];
         }
 
-        return [
-            'post_id'             => $post_id,
-            'url'                 => $url,
-            'current_title'       => $title,
-            'current_description' => $desc,
-        ];
+        if ($type === 'term') {
+            $term = get_term($id);
+            if (!$term || is_wp_error($term)) return null;
+
+            $url   = get_term_link($term);
+            if (is_wp_error($url)) $url = '';
+
+            $title = get_term_meta($id, '_yoast_wpseo_title',   true) ?: '';
+            $desc  = get_term_meta($id, '_yoast_wpseo_metadesc', true) ?: '';
+
+            if (empty($title) || empty($desc)) {
+                $tax_meta = get_option('wpseo_taxonomy_meta', []);
+                $saved    = $tax_meta[$term->taxonomy][$id] ?? [];
+                if (empty($title) && !empty($saved['wpseo_title'])) $title = $saved['wpseo_title'];
+                if (empty($desc)  && !empty($saved['wpseo_desc']))  $desc  = $saved['wpseo_desc'];
+            }
+
+            if ($replacer) {
+                if (!empty($title)) $title = $replacer->replace($title, $term);
+                if (!empty($desc))  $desc  = $replacer->replace($desc,  $term);
+            }
+            if ($replacer && (empty($title) || empty($desc))) {
+                $tx = $term->taxonomy;
+                if (empty($title) && !empty($wpseo_titles["title-tax-{$tx}"])) {
+                    $title = $replacer->replace($wpseo_titles["title-tax-{$tx}"], $term);
+                }
+                if (empty($desc) && !empty($wpseo_titles["metadesc-tax-{$tx}"])) {
+                    $desc = $replacer->replace($wpseo_titles["metadesc-tax-{$tx}"], $term);
+                }
+            }
+            if ((empty($title) || empty($desc)) && function_exists('YoastSEO')) {
+                try {
+                    $ms = YoastSEO()->meta->for_term($id);
+                    if ($ms) {
+                        if (empty($title) && !empty($ms->title))       $title = $ms->title;
+                        if (empty($desc)  && !empty($ms->description)) $desc  = $ms->description;
+                    }
+                } catch (Exception $e) {}
+            }
+            if (empty($desc) && !empty($term->description)) {
+                $desc = wp_strip_all_tags($term->description);
+            }
+
+            return [
+                'entity_type'         => 'term',
+                'entity_id'           => $id,
+                'post_id'             => $id,
+                'url'                 => $url,
+                'current_title'       => $title,
+                'current_description' => $desc,
+                'wp_entity'           => $term,
+                'name'                => $term->name,
+            ];
+        }
+
+        return null;
     }
 
     /**
      * Roep Gemini API aan voor één meta record
      */
     private function call_gemini_for_meta(array $meta, string $api_key) {
-        $post_id      = (int) ($meta['post_id'] ?? 0);
+        $entity_type  = $meta['entity_type'] ?? 'post';
+        $entity_id    = (int) ($meta['entity_id'] ?? $meta['post_id'] ?? 0);
         $post_content = '';
-        $post_title   = '';
+        $post_title   = $meta['name'] ?? '';
         $post_h1      = '';
 
-        if ($post_id) {
-            $post = get_post($post_id);
+        if ($entity_type === 'post' && $entity_id) {
+            $post = get_post($entity_id);
             if ($post) {
                 $post_title   = $post->post_title;
                 $post_content = wp_strip_all_tags($post->post_content);
@@ -989,6 +1312,13 @@ class RR_Ajax_Handler {
                 if (preg_match('/<h1[^>]*>(.*?)<\/h1>/is', $post->post_content, $h1_match)) {
                     $post_h1 = wp_strip_all_tags($h1_match[1]);
                 }
+            }
+        } elseif ($entity_type === 'term' && $entity_id) {
+            $term = get_term($entity_id);
+            if ($term && !is_wp_error($term)) {
+                $post_title   = $term->name;
+                $post_h1      = $term->name;
+                $post_content = trim(mb_substr(wp_strip_all_tags($term->description ?? ''), 0, 800));
             }
         }
 
@@ -1008,6 +1338,7 @@ class RR_Ajax_Handler {
         // Yoast lost %%title%% _ Merknaam op voordat het hier aankomt; zonder strippen bootst
         // de AI het " _ Merknaam"-suffix na ook al staat er in de prompt dat het niet mag.
         $current_title_context = $meta['current_title'] ?? '';
+        $allow_brand = false; // Merknaam altijd strippen (prompt verbiedt het al expliciet)
         if (!$allow_brand && !empty($current_title_context)) {
             $site_name = get_bloginfo('name');
             if (!empty($site_name)) {

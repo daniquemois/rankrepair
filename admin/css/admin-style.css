@@ -70,9 +70,13 @@
    Base & Typography
    ========================================== */
 .rr-wrap,
-.rr-wrap * {
+.rr-wrap *:not(.dashicons):not(.dashicons-before):not(.dashicons-before::before) {
     font-family: var(--rr-font) !important;
     box-sizing: border-box;
+}
+.rr-wrap .dashicons,
+.rr-wrap .dashicons-before::before {
+    font-family: dashicons !important;
 }
 
 .rr-wrap {
@@ -1371,3 +1375,130 @@
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+/* ==========================================
+   Settings accordeon
+   ========================================== */
+.rr-settings-form { max-width: 1100px; }
+
+.rr-accordion {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 20px;
+}
+
+.rr-accordion-item {
+    background: var(--rr-white);
+    border: 1px solid var(--rr-gray-200);
+    border-radius: var(--rr-radius-lg, 12px);
+    overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rr-accordion-item[open] {
+    border-color: var(--rr-primary, #6366f1);
+    box-shadow: 0 2px 8px rgba(99,102,241,0.08);
+}
+
+.rr-accordion-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    transition: background 0.1s;
+}
+.rr-accordion-head::-webkit-details-marker { display: none; }
+.rr-accordion-head:hover { background: var(--rr-gray-50, #f9fafb); }
+
+.rr-accordion-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--rr-gray-100, #f3f4f6);
+    color: var(--rr-primary, #6366f1);
+    font-size: 16px;
+    flex-shrink: 0;
+}
+.rr-accordion-item[open] .rr-accordion-icon {
+    background: rgba(99,102,241,0.12);
+}
+.rr-accordion-icon svg { width: 18px; height: 18px; display: block; }
+
+.rr-accordion-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--rr-gray-900, #111827);
+    flex-shrink: 0;
+}
+
+.rr-accordion-desc {
+    flex: 1;
+    font-size: 12px;
+    color: var(--rr-gray-500, #6b7280);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rr-accordion-chevron {
+    color: var(--rr-gray-400, #9ca3af);
+    transition: transform 0.2s, color 0.15s;
+    flex-shrink: 0;
+    display: block;
+}
+.rr-accordion-item[open] .rr-accordion-chevron {
+    transform: rotate(180deg);
+    color: var(--rr-primary, #6366f1);
+}
+
+.rr-back-link svg { display: inline-block; vertical-align: middle; margin-right: 4px; }
+
+.rr-accordion-body {
+    padding: 8px 20px 20px;
+    border-top: 1px solid var(--rr-gray-100, #f3f4f6);
+}
+
+.rr-accordion-body .form-table th { padding: 14px 10px 14px 0; width: 220px; }
+.rr-accordion-body .form-table td { padding: 14px 10px; }
+.rr-accordion-body .form-table .description { margin-top: 6px; color: var(--rr-gray-500, #6b7280); font-size: 13px; }
+
+.rr-no-fields {
+    color: var(--rr-gray-500, #6b7280);
+    font-style: italic;
+    padding: 16px 0;
+    margin: 0;
+}
+
+.rr-field-checkgroup { display: flex; flex-direction: column; gap: 10px; }
+.rr-field-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--rr-gray-200, #e5e7eb);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+.rr-field-check:hover { background: var(--rr-gray-50, #f9fafb); border-color: #c7d2fe; }
+.rr-field-check input[type="checkbox"] {
+    margin-top: 2px;
+    width: 16px;
+    height: 16px;
+    accent-color: var(--rr-purple, #7c3aed);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.rr-field-check:has(input:checked) { border-color: var(--rr-purple, #7c3aed); background: rgba(124,58,237,0.04); }
+.rr-field-check-body { display: flex; flex-direction: column; gap: 2px; }
+.rr-field-check-body strong { font-size: 13px; font-weight: 700; color: var(--rr-gray-900, #111827); }
+.rr-field-check-body em { font-size: 12px; color: var(--rr-gray-500, #6b7280); font-style: normal; }
+
+.rr-addon-row--off { opacity: 0.55; }
+.rr-addon-row--off .rr-addon-row-icon { filter: grayscale(0.6); }

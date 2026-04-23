@@ -122,65 +122,36 @@ class RR_Dashboard {
                     </div>
                 </div>
 
-                <!-- Right: Actieve add-ons -->
+                <!-- Right: Add-ons -->
                 <div class="rr-card" style="margin-bottom:0">
                     <div class="rr-card-header">
                         <div class="rr-card-header-left">
-                            <h2 class="rr-card-title"><?php _e('Actieve add-ons', 'rankrepair'); ?></h2>
+                            <h2 class="rr-card-title"><?php _e('Add-ons', 'rankrepair'); ?></h2>
                             <p class="rr-card-subtitle"><?php echo count($addons); ?> <?php _e('geactiveerd', 'rankrepair'); ?></p>
                         </div>
-                        <a href="<?php echo admin_url('admin.php?page=rankrepair&tab=addons'); ?>" class="rr-btn rr-btn-secondary button rr-btn-sm">
-                            <?php _e('Beheer', 'rankrepair'); ?>
-                        </a>
                     </div>
                     <div class="rr-addon-list">
                         <?php
-                        $addon_icons = [
-                            'meta-manager'      => ['icon' => '🤖', 'bg' => '#EDE9FE'],
-                            'image-optimizer'   => ['icon' => '🖼️', 'bg' => '#D1FAE5'],
-                            'redirects-checker' => ['icon' => '↪️', 'bg' => '#DBEAFE'],
-                            'form-tester'       => ['icon' => '📋', 'bg' => '#FEF3C7'],
-                        ];
-                        foreach ($addons as $slug => $addon):
-                            $stats   = $addon->get_stats();
-                            $meta    = $addon_icons[$slug] ?? ['icon' => '⚙️', 'bg' => '#F3F4F6'];
-                            if (!empty($stats['issues'])) {
-                                $sub = $stats['issues'] . ' ' . __('problemen gevonden', 'rankrepair');
-                            } elseif (!empty($stats['total'])) {
-                                $sub = $stats['total'] . ' ' . __('pagina\'s', 'rankrepair');
-                            } else {
-                                $sub = __('Actief', 'rankrepair');
+                        $available = rankrepair()->get_available_addons();
+                        foreach ($available as $slug => $meta):
+                            $is_enabled = get_option('rr_addon_' . $slug . '_enabled', '1') === '1';
+                            $is_active  = $is_enabled && isset($addons[$slug]);
+                            $sub        = __('Uitgeschakeld', 'rankrepair');
+                            if ($is_active) {
+                                $stats = $addons[$slug]->get_stats();
+                                if (!empty($stats['issues']))     $sub = $stats['issues'] . ' ' . __('problemen gevonden', 'rankrepair');
+                                elseif (!empty($stats['total']))  $sub = $stats['total']  . ' ' . __('pagina\'s', 'rankrepair');
+                                else                              $sub = __('Actief', 'rankrepair');
                             }
                         ?>
-                        <div class="rr-addon-row">
+                        <div class="rr-addon-row <?php echo $is_enabled ? '' : 'rr-addon-row--off'; ?>" data-addon-slug="<?php echo esc_attr($slug); ?>">
                             <div class="rr-addon-row-icon" style="background:<?php echo esc_attr($meta['bg']); ?>"><?php echo $meta['icon']; ?></div>
                             <div class="rr-addon-row-info">
-                                <p class="rr-addon-row-name"><?php echo esc_html($addon->get_name()); ?></p>
+                                <p class="rr-addon-row-name"><?php echo esc_html($meta['name']); ?></p>
                                 <p class="rr-addon-row-sub"><?php echo esc_html($sub); ?></p>
                             </div>
-                            <label class="rr-toggle" title="<?php _e('Ingeschakeld', 'rankrepair'); ?>">
-                                <input type="checkbox" checked disabled>
-                                <span class="rr-toggle-slider"></span>
-                            </label>
-                        </div>
-                        <?php endforeach; ?>
-
-                        <!-- Inactive placeholders -->
-                        <?php
-                        $coming = [
-                            ['name' => __('Internal Linking', 'rankrepair'), 'icon' => '🔗', 'bg' => '#F3F4F6'],
-                            ['name' => __('Rank Tracker', 'rankrepair'),     'icon' => '📊', 'bg' => '#F3F4F6'],
-                        ];
-                        foreach ($coming as $c):
-                        ?>
-                        <div class="rr-addon-row" style="opacity:0.55">
-                            <div class="rr-addon-row-icon" style="background:<?php echo esc_attr($c['bg']); ?>"><?php echo $c['icon']; ?></div>
-                            <div class="rr-addon-row-info">
-                                <p class="rr-addon-row-name"><?php echo esc_html($c['name']); ?></p>
-                                <p class="rr-addon-row-sub"><?php _e('Niet geactiveerd', 'rankrepair'); ?></p>
-                            </div>
                             <label class="rr-toggle">
-                                <input type="checkbox" disabled>
+                                <input type="checkbox" class="rr-addon-toggle" data-slug="<?php echo esc_attr($slug); ?>" <?php checked($is_enabled, true); ?>>
                                 <span class="rr-toggle-slider"></span>
                             </label>
                         </div>

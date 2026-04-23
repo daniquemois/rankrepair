@@ -15,6 +15,80 @@ class RR_Addon_Meta_Manager extends RR_Addon_Base {
         $this->name        = __('AI Meta Rewriter', 'rankrepair');
         $this->description = __('Herschrijf meta titles en beschrijvingen automatisch met AI. Geoptimaliseerd voor hogere CTR.', 'rankrepair');
         $this->icon        = 'dashicons-edit-page';
+
+        add_filter('rr_settings_sections', [$this, 'register_settings_section']);
+    }
+
+    public function register_settings_section(array $sections): array {
+        $default_prompt = function_exists('rr_get_default_prompt_template') ? rr_get_default_prompt_template() : '';
+
+        $sections[] = [
+            'id'          => 'meta-manager',
+            'title'       => __('AI Meta Rewriter', 'rankrepair'),
+            'icon'        => 'meta-manager',
+            'priority'    => 20,
+            'description' => __('AI provider, prompt en paginatie instellingen', 'rankrepair'),
+            'fields'   => [
+                [
+                    'name'        => 'rr_ai_provider',
+                    'label'       => __('AI Provider', 'rankrepair'),
+                    'type'        => 'select',
+                    'default'     => 'google',
+                    'options'     => [
+                        'google'     => 'Google AI Studio',
+                        'openrouter' => 'OpenRouter',
+                    ],
+                    'description' => __('<strong>Google AI Studio:</strong> gratis API key via <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a>.<br><strong>OpenRouter:</strong> via <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a> — geeft toegang tot honderden modellen.', 'rankrepair'),
+                ],
+                [
+                    'name'        => 'rr_gemini_api_key',
+                    'label'       => __('AI API Key', 'rankrepair'),
+                    'type'        => 'apikey',
+                    'placeholder' => 'AIza... of sk-or-v1-...',
+                    'description' => __('Wordt gebruikt om automatisch meta titels en beschrijvingen te genereren. Laat leeg om de bestaande sleutel te bewaren.', 'rankrepair'),
+                ],
+                [
+                    'name'        => 'rr_ai_model',
+                    'label'       => __('AI Model', 'rankrepair'),
+                    'type'        => 'text',
+                    'description' => __('Laat leeg voor de standaard. OpenRouter voorbeelden: <code>google/gemini-2.0-flash-001</code>, <code>google/gemini-2.5-pro-exp-03-25</code>.<br>Google AI Studio voorbeelden: <code>gemini-1.5-flash</code>, <code>gemini-1.5-pro</code>.', 'rankrepair'),
+                ],
+                [
+                    'name'        => 'rr_gemini_prompt',
+                    'label'       => __('AI Prompt', 'rankrepair'),
+                    'type'        => 'textarea',
+                    'rows'        => 22,
+                    'default'     => $default_prompt,
+                    'description' => __('Het volledige AI-prompt. Pas de sectie <strong>TOON &amp; STIJL</strong> aan voor jouw tone of voice.', 'rankrepair'),
+                    'after'       => '<p><a href="#" id="rr-reset-prompt">↺ ' . esc_html__('Reset naar standaard', 'rankrepair') . '</a></p>',
+                ],
+                [
+                    'name'    => 'rr_pagination_sep',
+                    'label'   => __('Paginatie scheidingsteken', 'rankrepair'),
+                    'type'    => 'radio',
+                    'default' => '-',
+                    'options' => [
+                        '-' => __('streepje', 'rankrepair'),
+                        '|' => __('pipe', 'rankrepair'),
+                        '•' => __('bol', 'rankrepair'),
+                        '*' => __('ster', 'rankrepair'),
+                    ],
+                ],
+                [
+                    'name'        => 'rr_pagination_label',
+                    'label'       => __('Paginatie label', 'rankrepair'),
+                    'type'        => 'text',
+                    'default'     => 'Pagina',
+                    'description' => sprintf(
+                        /* translators: %s = live preview voorbeeld */
+                        __('Wordt toegevoegd aan de meta titel op pagina 2+. Voorbeeld: %s', 'rankrepair'),
+                        '<strong id="rr-pagination-preview">Blog titel ' . esc_html(get_option('rr_pagination_sep', '-')) . ' ' . esc_html(get_option('rr_pagination_label', 'Pagina')) . ' 2</strong>'
+                    ),
+                ],
+            ],
+        ];
+
+        return $sections;
     }
 
     public function get_stats() {
@@ -172,7 +246,50 @@ document.addEventListener('DOMContentLoaded', function() {
      * Haal live WP data op voor alle gepubliceerde pagina's,
      * gecombineerd met opgeslagen AI-suggesties uit de RR tabel.
      */
-    private function load_live_items() {
+    public function compute_stats(array $all_items): array {
+        $total            = count($all_items);
+        $missing_h1       = count(array_filter($all_items, fn($i) => empty(json_decode($i['current_h1'] ?? '[]', true) ?: [])));
+        $duplicate_h1     = count(array_filter($all_items, fn($i) => count(json_decode($i['current_h1'] ?? '[]', true) ?: []) > 1));
+        $missing_title    = count(array_filter($all_items, fn($i) => empty($i['current_title'])));
+        $title_too_short  = count(array_filter($all_items, fn($i) => $i['title_length'] > 0 && $i['title_length'] < 30));
+        $title_too_long   = count(array_filter($all_items, fn($i) => $i['title_length'] > 60));
+        $duplicate_title  = count(array_filter($all_items, fn($i) => $i['is_duplicate_title']));
+        $missing_desc     = count(array_filter($all_items, fn($i) => empty($i['current_description'])));
+        $desc_too_short   = count(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70));
+        $desc_too_long    = count(array_filter($all_items, fn($i) => $i['description_length'] > 160));
+        $duplicate_desc   = count(array_filter($all_items, fn($i) => $i['is_duplicate_description']));
+        $ai_ready         = count(array_filter($all_items, fn($i) => !empty($i['new_title']) && $i['status'] !== 'applied'));
+        $applied          = count(array_filter($all_items, fn($i) => $i['status'] === 'applied'));
+        $issues           = count(array_filter($all_items, fn($i) =>
+            empty($i['current_title']) || empty($i['current_description'])
+            || $i['is_duplicate_title'] || $i['is_duplicate_description']
+            || ($i['title_length'] > 0 && $i['title_length'] < 30)
+            || ($i['description_length'] > 0 && $i['description_length'] < 70)
+            || $i['title_length'] > 60 || $i['description_length'] > 160
+        ));
+
+        return [
+            'total'           => $total,
+            'issues'          => $issues,
+            'missing_h1'      => $missing_h1,
+            'duplicate_h1'    => $duplicate_h1,
+            'h1_ok'           => $total - $missing_h1 - $duplicate_h1,
+            'missing_title'   => $missing_title,
+            'title_too_short' => $title_too_short,
+            'title_too_long'  => $title_too_long,
+            'duplicate_title' => $duplicate_title,
+            'title_ok'        => $total - $missing_title - $title_too_short - $title_too_long - $duplicate_title,
+            'missing_desc'    => $missing_desc,
+            'desc_too_short'  => $desc_too_short,
+            'desc_too_long'   => $desc_too_long,
+            'duplicate_desc'  => $duplicate_desc,
+            'desc_ok'         => $total - $missing_desc - $desc_too_short - $desc_too_long - $duplicate_desc,
+            'ai_ready'        => $ai_ready,
+            'applied'         => $applied,
+        ];
+    }
+
+    public function load_live_items() {
         global $wpdb;
         $table = $wpdb->prefix . 'rr_meta_data';
 
@@ -198,14 +315,19 @@ document.addEventListener('DOMContentLoaded', function() {
             ORDER BY p.post_type, p.ID ASC
         ");
 
-        // 2. Opgeslagen AI-data (new_title, new_description, status) per post_id
+        // 2. Opgeslagen AI-data per entity (composite key: type:id)
         $rr_stored = [];
         if ($wpdb->get_var("SHOW TABLES LIKE '$table'") === $table) {
-            $stored_rows = $wpdb->get_results("SELECT post_id, new_title, new_description, status FROM $table", ARRAY_A);
+            $has_entity_col = (bool) $wpdb->get_results("SHOW COLUMNS FROM $table LIKE 'entity_type'");
+            if ($has_entity_col) {
+                $stored_rows = $wpdb->get_results("SELECT post_id, entity_type, new_title, new_description, status FROM $table", ARRAY_A);
+            } else {
+                $stored_rows = $wpdb->get_results("SELECT post_id, new_title, new_description, status FROM $table", ARRAY_A);
+            }
             foreach ($stored_rows as $row) {
-                if (!empty($row['post_id'])) {
-                    $rr_stored[(int)$row['post_id']] = $row;
-                }
+                if (empty($row['post_id'])) continue;
+                $type = $row['entity_type'] ?? 'post';
+                $rr_stored[$type . ':' . (int)$row['post_id']] = $row;
             }
         }
 
@@ -268,11 +390,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (!empty($excerpt)) $desc = $excerpt;
             }
 
-            $stored = $rr_stored[$raw->ID] ?? [];
+            $stored = $rr_stored['post:' . $raw->ID] ?? [];
 
             $item = [
-                'id'                       => $raw->ID, // post_id is nu de identifier
+                'id'                       => 'post:' . $raw->ID,
                 'post_id'                  => $raw->ID,
+                'entity_type'              => 'post',
+                'entity_subtype'           => $raw->post_type,
                 'url'                      => $url,
                 'current_h1'               => $h1,
                 'current_title'            => $title,
@@ -290,6 +414,89 @@ document.addEventListener('DOMContentLoaded', function() {
             if (!empty($desc))  $desc_counts[$desc]   = ($desc_counts[$desc]   ?? 0) + 1;
 
             $all_items[] = $item;
+        }
+
+        // 4. Termen (taxonomies) — categoriepagina's, tag-pagina's
+        $taxonomies = apply_filters('rr_scan_taxonomies', ['category', 'post_tag', 'product_cat', 'product_tag']);
+        $taxonomies = array_filter(array_map('sanitize_key', $taxonomies), fn($t) => taxonomy_exists($t));
+
+        foreach ($taxonomies as $taxonomy) {
+            $terms = get_terms(['taxonomy' => $taxonomy, 'hide_empty' => false]);
+            if (is_wp_error($terms) || empty($terms)) continue;
+
+            foreach ($terms as $term) {
+                $url = get_term_link($term);
+                if (is_wp_error($url)) continue;
+
+                // Yoast term meta: eerst directe term_meta (Yoast 14+)
+                $title = get_term_meta($term->term_id, '_yoast_wpseo_title',   true) ?: '';
+                $desc  = get_term_meta($term->term_id, '_yoast_wpseo_metadesc', true) ?: '';
+
+                // Yoast 13- fallback: wpseo_taxonomy_meta option
+                if (empty($title) || empty($desc)) {
+                    $tax_meta = get_option('wpseo_taxonomy_meta', []);
+                    $saved    = $tax_meta[$taxonomy][$term->term_id] ?? [];
+                    if (empty($title) && !empty($saved['wpseo_title']))    $title = $saved['wpseo_title'];
+                    if (empty($desc)  && !empty($saved['wpseo_desc']))     $desc  = $saved['wpseo_desc'];
+                }
+
+                // Template resolve
+                if ($replacer) {
+                    if (!empty($title)) $title = $replacer->replace($title, $term);
+                    if (!empty($desc))  $desc  = $replacer->replace($desc,  $term);
+                }
+
+                // Fallback: taxonomy-template uit wpseo_titles
+                if ($replacer && (empty($title) || empty($desc))) {
+                    if (empty($title) && !empty($wpseo_titles["title-tax-{$taxonomy}"])) {
+                        $title = $replacer->replace($wpseo_titles["title-tax-{$taxonomy}"], $term);
+                    }
+                    if (empty($desc) && !empty($wpseo_titles["metadesc-tax-{$taxonomy}"])) {
+                        $desc = $replacer->replace($wpseo_titles["metadesc-tax-{$taxonomy}"], $term);
+                    }
+                }
+
+                // Yoast surface API voor termen
+                if ((empty($title) || empty($desc)) && function_exists('YoastSEO')) {
+                    try {
+                        $ms = YoastSEO()->meta->for_term($term->term_id);
+                        if ($ms) {
+                            if (empty($title) && !empty($ms->title))       $title = $ms->title;
+                            if (empty($desc)  && !empty($ms->description)) $desc  = $ms->description;
+                        }
+                    } catch (Exception $e) {}
+                }
+
+                // Description laatste fallback: term description
+                if (empty($desc) && !empty($term->description)) {
+                    $desc = wp_strip_all_tags($term->description);
+                }
+
+                $stored = $rr_stored['term:' . $term->term_id] ?? [];
+
+                $item = [
+                    'id'                       => 'term:' . $term->term_id,
+                    'post_id'                  => $term->term_id,
+                    'entity_type'              => 'term',
+                    'entity_subtype'           => $taxonomy,
+                    'url'                      => $url,
+                    'current_h1'               => json_encode([$term->name], JSON_UNESCAPED_UNICODE),
+                    'current_title'            => $title,
+                    'current_description'      => $desc,
+                    'new_title'                => $stored['new_title']       ?? '',
+                    'new_description'          => $stored['new_description'] ?? '',
+                    'status'                   => $stored['status']          ?? 'pending',
+                    'is_duplicate_title'       => 0,
+                    'is_duplicate_description' => 0,
+                    'title_length'             => mb_strlen($title),
+                    'description_length'       => mb_strlen($desc),
+                ];
+
+                if (!empty($title)) $title_counts[$title] = ($title_counts[$title] ?? 0) + 1;
+                if (!empty($desc))  $desc_counts[$desc]   = ($desc_counts[$desc]   ?? 0) + 1;
+
+                $all_items[] = $item;
+            }
         }
 
         // Duplicaten markeren
@@ -319,20 +526,28 @@ document.addEventListener('DOMContentLoaded', function() {
         $all_items = $this->load_live_items();
 
         // Filter toepassen
-        $items = $all_items;
-        if ($filter === 'issues') {
-            $items = array_values(array_filter($items, function($i) {
-                return empty($i['current_title']) || empty($i['current_description'])
-                    || $i['is_duplicate_title'] || $i['is_duplicate_description'];
-            }));
-        } elseif ($filter === 'ai_ready') {
-            $items = array_values(array_filter($items, function($i) {
-                return !empty($i['new_title']) && $i['status'] !== 'applied';
-            }));
-        } elseif ($filter === 'ok') {
-            $items = array_values(array_filter($items, function($i) {
-                return $i['status'] === 'applied';
-            }));
+        $items       = $all_items;
+        $h1_count    = fn($i) => count(json_decode($i['current_h1'] ?? '[]', true) ?: []);
+        $filter_map = [
+            'issues'           => fn($i) => empty($i['current_title']) || empty($i['current_description']) || $i['is_duplicate_title'] || $i['is_duplicate_description'] || ($i['title_length'] > 0 && $i['title_length'] < 30) || ($i['description_length'] > 0 && $i['description_length'] < 70) || $i['title_length'] > 60 || $i['description_length'] > 160,
+            'ai_ready'         => fn($i) => !empty($i['new_title']) && $i['status'] !== 'applied',
+            'ok'               => fn($i) => $i['status'] === 'applied',
+            'missing_h1'       => fn($i) => $h1_count($i) === 0,
+            'duplicate_h1'     => fn($i) => $h1_count($i) > 1,
+            'h1_ok'            => fn($i) => $h1_count($i) === 1,
+            'missing_title'    => fn($i) => empty($i['current_title']),
+            'title_too_short'  => fn($i) => $i['title_length'] > 0 && $i['title_length'] < 30,
+            'title_too_long'   => fn($i) => $i['title_length'] > 60,
+            'duplicate_title'  => fn($i) => (bool) $i['is_duplicate_title'],
+            'title_ok'         => fn($i) => !empty($i['current_title']) && $i['title_length'] >= 30 && $i['title_length'] <= 60 && !$i['is_duplicate_title'],
+            'missing_desc'     => fn($i) => empty($i['current_description']),
+            'desc_too_short'   => fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70,
+            'desc_too_long'    => fn($i) => $i['description_length'] > 160,
+            'duplicate_desc'   => fn($i) => (bool) $i['is_duplicate_description'],
+            'desc_ok'          => fn($i) => !empty($i['current_description']) && $i['description_length'] >= 70 && $i['description_length'] <= 160 && !$i['is_duplicate_description'],
+        ];
+        if (isset($filter_map[$filter])) {
+            $items = array_values(array_filter($items, $filter_map[$filter]));
         }
 
         // Zoekfilter
@@ -364,45 +579,40 @@ document.addEventListener('DOMContentLoaded', function() {
         $paged          = min($paged, $total_pages);
 
         // Alle gefilterde IDs doorgeven aan JS (voor bulk AI over meerdere pagina's)
-        $all_filtered_ids = array_map('intval', array_column($items, 'id'));
+        // IDs zijn composite strings: "post:123" of "term:45"
+        $all_filtered_ids = array_column($items, 'id');
+
+        // Per fout-type: aparte ID-sets voor de bulk AI-knop
+        $ids_missing_title = array_values(array_column(array_filter($all_items, fn($i) => empty($i['current_title'])),                                       'id'));
+        $ids_missing_desc  = array_values(array_column(array_filter($all_items, fn($i) => empty($i['current_description'])),                                  'id'));
+        $ids_dup_title     = array_values(array_column(array_filter($all_items, fn($i) => (bool)$i['is_duplicate_title']),                                    'id'));
+        $ids_dup_desc      = array_values(array_column(array_filter($all_items, fn($i) => (bool)$i['is_duplicate_description']),                              'id'));
+        $ids_long_title    = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > 60),                                     'id'));
+        $ids_long_desc     = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > 160),                                    'id'));
+        $ids_short_title   = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > 0 && $i['title_length']       < 30),     'id'));
+        $ids_short_desc    = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70),     'id'));
+        $all_issue_ids     = array_values(array_unique(array_merge($ids_missing_title, $ids_missing_desc, $ids_dup_title, $ids_dup_desc, $ids_long_title, $ids_long_desc, $ids_short_title, $ids_short_desc)));
+
         wp_add_inline_script('rr-meta-manager',
-            'rrMetaManager.allFilteredIds = ' . wp_json_encode($all_filtered_ids) . ';',
+            'rrMetaManager.allFilteredIds = '   . wp_json_encode($all_filtered_ids) . ';' .
+            'rrMetaManager.allIssueIds = '      . wp_json_encode($all_issue_ids)    . ';' .
+            'rrMetaManager.activeFilter = '     . wp_json_encode($filter)           . ';' .
+            'rrMetaManager.issueIds = {'         .
+                'missingTitle:'  . wp_json_encode($ids_missing_title) . ',' .
+                'missingDesc:'   . wp_json_encode($ids_missing_desc)  . ',' .
+                'dupTitle:'      . wp_json_encode($ids_dup_title)     . ',' .
+                'dupDesc:'       . wp_json_encode($ids_dup_desc)      . ',' .
+                'longTitle:'     . wp_json_encode($ids_long_title)    . ',' .
+                'longDesc:'      . wp_json_encode($ids_long_desc)     . ',' .
+                'shortTitle:'    . wp_json_encode($ids_short_title)   . ',' .
+                'shortDesc:'     . wp_json_encode($ids_short_desc)    .
+            '};',
             'before'
         );
 
         $items = array_slice($items, ($paged - 1) * $per_page, $per_page);
 
-        // Stats live berekenen
-        $total           = count($all_items);
-        $missing_h1      = count(array_filter($all_items, fn($i) => empty(json_decode($i['current_h1'] ?? '[]', true) ?: [])));
-        $duplicate_h1    = count(array_filter($all_items, fn($i) => count(json_decode($i['current_h1'] ?? '[]', true) ?: []) > 1));
-        $missing_title   = count(array_filter($all_items, fn($i) => empty($i['current_title'])));
-        $title_too_long  = count(array_filter($all_items, fn($i) => $i['title_length'] > 60));
-        $duplicate_title = count(array_filter($all_items, fn($i) => $i['is_duplicate_title']));
-        $missing_desc    = count(array_filter($all_items, fn($i) => empty($i['current_description'])));
-        $desc_too_long   = count(array_filter($all_items, fn($i) => $i['description_length'] > 160));
-        $duplicate_desc  = count(array_filter($all_items, fn($i) => $i['is_duplicate_description']));
-        $ai_ready        = count(array_filter($all_items, fn($i) => !empty($i['new_title']) && $i['status'] !== 'applied'));
-        $applied         = count(array_filter($all_items, fn($i) => $i['status'] === 'applied'));
-        $issues          = count(array_filter($all_items, fn($i) => empty($i['current_title']) || empty($i['current_description']) || $i['is_duplicate_title'] || $i['is_duplicate_description']));
-
-        $stats = [
-            'total'          => $total,
-            'issues'         => $issues,
-            'missing_h1'     => $missing_h1,
-            'duplicate_h1'   => $duplicate_h1,
-            'h1_ok'          => $total - $missing_h1 - $duplicate_h1,
-            'missing_title'  => $missing_title,
-            'title_too_long' => $title_too_long,
-            'duplicate_title'=> $duplicate_title,
-            'title_ok'       => $total - $missing_title - $title_too_long - $duplicate_title,
-            'missing_desc'   => $missing_desc,
-            'desc_too_long'  => $desc_too_long,
-            'duplicate_desc' => $duplicate_desc,
-            'desc_ok'        => $total - $missing_desc - $desc_too_long - $duplicate_desc,
-            'ai_ready'       => $ai_ready,
-            'applied'        => $applied,
-        ];
+        $stats = $this->compute_stats($all_items);
 
         $site_domain = wp_parse_url(home_url('/'), PHP_URL_HOST);
         $has_ai      = !empty(get_option('rr_gemini_api_key', ''));
@@ -442,7 +652,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     <?php if ($has_ai): ?>
                     <button type="button" id="rr-gemini-bulk" class="rr-btn rr-btn-gradient button">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                        <?php _e('Alle', 'rankrepair'); ?> <span class="rr-bulk-count"><?php echo esc_html(count($items)); ?></span> <?php _e('herschrijven met AI', 'rankrepair'); ?>
+                        <?php _e('Fouten', 'rankrepair'); ?> <span class="rr-bulk-count" data-stat="issues"><?php echo esc_html(count($all_issue_ids)); ?></span> <?php _e('herschrijven met AI', 'rankrepair'); ?>
                     </button>
                     <?php endif; ?>
                 </div>
@@ -452,56 +662,70 @@ document.addEventListener('DOMContentLoaded', function() {
             <div class="rr-mm-stats">
                 <!-- Rij 1: samenvatting -->
                 <div class="rr-mm-stats-row rr-mm-stats-row--summary">
-                    <div class="rr-mm-stat-sum">
-                        <span class="rr-mm-stat-sum-num"><?php echo esc_html($stats['total']); ?></span>
+                    <?php $base_sum_url = admin_url('admin.php?page=rankrepair-meta-manager'); ?>
+                    <a href="<?php echo esc_url(add_query_arg('filter', 'all', $base_sum_url)); ?>" class="rr-mm-stat-sum<?php echo $filter === 'all' ? ' rr-mm-stat-sum--active' : ''; ?>">
+                        <span class="rr-mm-stat-sum-num" data-stat="total"><?php echo esc_html($stats['total']); ?></span>
                         <span class="rr-mm-stat-sum-label"><?php _e("Pagina's geanalyseerd", 'rankrepair'); ?></span>
-                    </div>
+                    </a>
                     <div class="rr-mm-stat-divider"></div>
-                    <div class="rr-mm-stat-sum rr-mm-stat-sum--danger">
-                        <span class="rr-mm-stat-sum-num"><?php echo esc_html($stats['issues']); ?></span>
+                    <a href="<?php echo esc_url(add_query_arg('filter', 'issues', $base_sum_url)); ?>" class="rr-mm-stat-sum rr-mm-stat-sum--danger<?php echo $filter === 'issues' ? ' rr-mm-stat-sum--active' : ''; ?>">
+                        <span class="rr-mm-stat-sum-num" data-stat="issues"><?php echo esc_html($stats['issues']); ?></span>
                         <span class="rr-mm-stat-sum-label"><?php _e('Problemen gevonden', 'rankrepair'); ?></span>
-                    </div>
+                    </a>
                     <div class="rr-mm-stat-divider"></div>
-                    <div class="rr-mm-stat-sum rr-mm-stat-sum--indigo">
-                        <span class="rr-mm-stat-sum-num"><?php echo esc_html($stats['ai_ready']); ?></span>
+                    <a href="<?php echo esc_url(add_query_arg('filter', 'ai_ready', $base_sum_url)); ?>" class="rr-mm-stat-sum rr-mm-stat-sum--indigo<?php echo $filter === 'ai_ready' ? ' rr-mm-stat-sum--active' : ''; ?>">
+                        <span class="rr-mm-stat-sum-num" data-stat="ai_ready"><?php echo esc_html($stats['ai_ready']); ?></span>
                         <span class="rr-mm-stat-sum-label"><?php _e('AI suggesties klaar', 'rankrepair'); ?></span>
-                    </div>
+                    </a>
                     <div class="rr-mm-stat-divider"></div>
-                    <div class="rr-mm-stat-sum rr-mm-stat-sum--success">
-                        <span class="rr-mm-stat-sum-num"><?php echo esc_html($stats['applied']); ?></span>
+                    <a href="<?php echo esc_url(add_query_arg('filter', 'ok', $base_sum_url)); ?>" class="rr-mm-stat-sum rr-mm-stat-sum--success<?php echo $filter === 'ok' ? ' rr-mm-stat-sum--active' : ''; ?>">
+                        <span class="rr-mm-stat-sum-num" data-stat="applied"><?php echo esc_html($stats['applied']); ?></span>
                         <span class="rr-mm-stat-sum-label"><?php _e('Toegepast', 'rankrepair'); ?></span>
-                    </div>
+                    </a>
                 </div>
                 <!-- Rij 2: uitsplitsing per categorie -->
                 <div class="rr-mm-stats-row rr-mm-stats-row--breakdown">
                     <?php
                     $pill_data = [
                         'H1' => [
-                            [$stats['missing_h1'],  'Ontbreekt', 'danger'],
-                            [$stats['duplicate_h1'], 'Dubbel',    'warning'],
-                            [$stats['h1_ok'],        'OK',        'ok'],
+                            [$stats['missing_h1'],   'Ontbreekt', 'danger',  'missing_h1'],
+                            [$stats['duplicate_h1'], 'Dubbel',    'warning', 'duplicate_h1'],
+                            [$stats['h1_ok'],        'OK',        'ok',      'h1_ok'],
                         ],
                         __('Meta titel', 'rankrepair') => [
-                            [$stats['missing_title'],   'Ontbreekt', 'danger'],
-                            [$stats['title_too_long'],  'Te lang',   'warning'],
-                            [$stats['duplicate_title'], 'Dubbel',    'warning'],
-                            [$stats['title_ok'],        'OK',        'ok'],
+                            [$stats['missing_title'],    'Ontbreekt', 'danger',  'missing_title'],
+                            [$stats['title_too_short'],  'Te kort',   'warning', 'title_too_short'],
+                            [$stats['title_too_long'],   'Te lang',   'warning', 'title_too_long'],
+                            [$stats['duplicate_title'],  'Dubbel',    'warning', 'duplicate_title'],
+                            [$stats['title_ok'],         'OK',        'ok',      'title_ok'],
                         ],
                         __('Meta omschrijving', 'rankrepair') => [
-                            [$stats['missing_desc'],   'Ontbreekt', 'danger'],
-                            [$stats['desc_too_long'],  'Te lang',   'warning'],
-                            [$stats['duplicate_desc'], 'Dubbel',    'warning'],
-                            [$stats['desc_ok'],        'OK',        'ok'],
+                            [$stats['missing_desc'],    'Ontbreekt', 'danger',  'missing_desc'],
+                            [$stats['desc_too_short'],  'Te kort',   'warning', 'desc_too_short'],
+                            [$stats['desc_too_long'],   'Te lang',   'warning', 'desc_too_long'],
+                            [$stats['duplicate_desc'],  'Dubbel',    'warning', 'duplicate_desc'],
+                            [$stats['desc_ok'],         'OK',        'ok',      'desc_ok'],
                         ],
                     ];
+                    $base_url = admin_url('admin.php?page=rankrepair-meta-manager');
                     foreach ($pill_data as $cat => $pills): ?>
                     <div class="rr-mm-stat-cat">
                         <span class="rr-mm-stat-cat-label"><?php echo esc_html($cat); ?></span>
                         <div class="rr-mm-stat-pills">
-                            <?php foreach ($pills as [$num, $label, $type]): ?>
-                            <span class="rr-mm-pill rr-mm-pill--<?php echo $type; ?>">
-                                <strong><?php echo esc_html($num); ?></strong> <?php echo esc_html($label); ?>
+                            <?php foreach ($pills as [$num, $label, $type, $fkey]):
+                                $pill_url    = esc_url(add_query_arg('filter', $fkey, $base_url));
+                                $active_cls  = ($filter === $fkey) ? ' rr-mm-pill--active' : '';
+                                $disabled    = $num <= 0;
+                            ?>
+                            <?php if ($disabled): ?>
+                            <span class="rr-mm-pill rr-mm-pill--<?php echo $type; ?><?php echo $active_cls; ?> rr-mm-pill--disabled" data-pill="<?php echo esc_attr($fkey); ?>">
+                                <strong data-stat="<?php echo esc_attr($fkey); ?>"><?php echo esc_html($num); ?></strong> <?php echo esc_html($label); ?>
                             </span>
+                            <?php else: ?>
+                            <a href="<?php echo $pill_url; ?>" class="rr-mm-pill rr-mm-pill--<?php echo $type; ?><?php echo $active_cls; ?>" data-pill="<?php echo esc_attr($fkey); ?>">
+                                <strong data-stat="<?php echo esc_attr($fkey); ?>"><?php echo esc_html($num); ?></strong> <?php echo esc_html($label); ?>
+                            </a>
+                            <?php endif; ?>
                             <?php endforeach; ?>
                         </div>
                     </div>
@@ -536,10 +760,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         <?php
                         $base = '?page=rankrepair-meta-manager' . (!empty($url_patterns) ? '&url_patterns=' . urlencode($url_patterns) : '');
                         ?>
-                        <a href="<?php echo $base; ?>&filter=all" class="rr-mm-tab <?php echo $filter === 'all' ? 'active' : ''; ?>"><?php printf(__('Alle (%d)', 'rankrepair'), $stats['total']); ?></a>
-                        <a href="<?php echo $base; ?>&filter=issues" class="rr-mm-tab <?php echo $filter === 'issues' ? 'active' : ''; ?>"><?php printf(__('Problemen (%d)', 'rankrepair'), $stats['issues']); ?></a>
-                        <a href="<?php echo $base; ?>&filter=ai_ready" class="rr-mm-tab <?php echo $filter === 'ai_ready' ? 'active' : ''; ?>"><?php printf(__('AI klaar (%d)', 'rankrepair'), $stats['ai_ready'] ?? 0); ?></a>
-                        <a href="<?php echo $base; ?>&filter=ok" class="rr-mm-tab <?php echo $filter === 'ok' ? 'active' : ''; ?>"><?php printf(__('OK (%d)', 'rankrepair'), $stats['applied'] ?? 0); ?></a>
+                        <a href="<?php echo $base; ?>&filter=all" class="rr-mm-tab <?php echo $filter === 'all' ? 'active' : ''; ?>">Alle (<span data-stat="total"><?php echo (int) $stats['total']; ?></span>)</a>
+                        <a href="<?php echo $base; ?>&filter=issues" class="rr-mm-tab <?php echo $filter === 'issues' ? 'active' : ''; ?>">Problemen (<span data-stat="issues"><?php echo (int) $stats['issues']; ?></span>)</a>
+                        <a href="<?php echo $base; ?>&filter=ai_ready" class="rr-mm-tab <?php echo $filter === 'ai_ready' ? 'active' : ''; ?>">AI klaar (<span data-stat="ai_ready"><?php echo (int) ($stats['ai_ready'] ?? 0); ?></span>)</a>
+                        <a href="<?php echo $base; ?>&filter=ok" class="rr-mm-tab <?php echo $filter === 'ok' ? 'active' : ''; ?>">OK (<span data-stat="applied"><?php echo (int) ($stats['applied'] ?? 0); ?></span>)</a>
                     </div>
 
                     <!-- URL-patroon filter -->
@@ -590,7 +814,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                         ?>
                         <?php foreach ($items as $item):
-                            $is_selected = ($selected_item && (int)$item['id'] === (int)$selected_item['id']);
+                            $is_selected = ($selected_item && $item['id'] === $selected_item['id']);
                             $h1s_arr  = json_decode($item['current_h1'] ?? '[]', true) ?: [];
                             $h1_count = count($h1s_arr);
                             $has_new  = !empty($item['new_title']);
@@ -606,6 +830,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             elseif ($has_new && !$is_ok)                              { $tb = ['✨', 'indigo']; }
                             elseif ($item['is_duplicate_title'])                      { $tb = ['2×', 'warning']; }
                             elseif ($item['title_length'] > 60)                       { $tb = ['≈', 'warning']; }
+                            elseif ($item['title_length'] < 30)                       { $tb = ['≈', 'warning']; }
                             else                                                       { $tb = ['✓', 'ok']; }
 
                             // Desc badge
@@ -613,6 +838,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             elseif (!empty($item['new_description']) && !$is_ok)     { $db = ['✨', 'indigo']; }
                             elseif ($item['is_duplicate_description'])               { $db = ['2×', 'warning']; }
                             elseif ($item['description_length'] > 160)              { $db = ['≈', 'warning']; }
+                            elseif ($item['description_length'] < 70)                { $db = ['≈', 'warning']; }
                             else                                                      { $db = ['✓', 'ok']; }
 
                             // Overall dot + icon
@@ -664,7 +890,21 @@ document.addEventListener('DOMContentLoaded', function() {
                              onclick="rrMMSelectPage(this)">
                             <span class="rr-mm-row-dot" style="background:<?php echo esc_attr($dot_color); ?>"></span>
                             <div class="rr-mm-page-info">
-                                <p class="rr-mm-page-name"><?php echo esc_html($name); ?></p>
+                                <p class="rr-mm-page-name">
+                                    <?php echo esc_html($name); ?>
+                                    <?php if (($item['entity_type'] ?? 'post') === 'term'): ?>
+                                    <?php
+                                    $tax_labels = [
+                                        'product_cat' => __('Productcat.', 'rankrepair'),
+                                        'product_tag' => __('Producttag', 'rankrepair'),
+                                        'category'    => __('Categorie', 'rankrepair'),
+                                        'post_tag'    => __('Tag', 'rankrepair'),
+                                    ];
+                                    $label = $tax_labels[$item['entity_subtype'] ?? ''] ?? __('Term', 'rankrepair');
+                                    ?>
+                                    <span class="rr-mm-type-badge"><?php echo esc_html($label); ?></span>
+                                    <?php endif; ?>
+                                </p>
                                 <p class="rr-mm-page-url"><?php echo esc_html($display_url); ?></p>
                             </div>
                             <div class="rr-mm-field-badges">
@@ -893,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="rr-mm-field-actions">
                     <span class="rr-mm-char-badge <?php echo esc_attr($title_char_class); ?>" id="rr-char-title"><?php echo esc_html($title_char_label); ?></span>
                     <?php if ($has_ai): ?>
-                    <button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(<?php echo (int)$item['id']; ?>, 'title')">
+                    <button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate('<?php echo esc_js($item['id']); ?>', 'title')">
                         ✨ <?php _e('AI suggestie', 'rankrepair'); ?>
                     </button>
                     <?php endif; ?>
@@ -919,10 +1159,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     <div class="rr-mm-ai-suggestion-box">
                         <p class="rr-mm-suggestion-text" id="rr-title-suggestion"><?php echo esc_html($new_title); ?></p>
                         <div class="rr-mm-suggestion-actions">
-                            <button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="<?php echo esc_attr($new_title); ?>" onclick="rrMMAccept(<?php echo (int)$item['id']; ?>, 'title', this)">✓ <?php _e('Overnemen', 'rankrepair'); ?></button>
-                            <button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject(<?php echo (int)$item['id']; ?>, 'title', this)">✕ <?php _e('Afwijzen', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="<?php echo esc_attr($new_title); ?>" onclick="rrMMAccept('<?php echo esc_js($item['id']); ?>', 'title', this)">✓ <?php _e('Overnemen', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject('<?php echo esc_js($item['id']); ?>', 'title', this)">✕ <?php _e('Afwijzen', 'rankrepair'); ?></button>
                             <?php if ($has_ai): ?>
-                            <button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate(<?php echo (int)$item['id']; ?>, 'title')">↺ <?php _e('Opnieuw genereren', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate('<?php echo esc_js($item['id']); ?>', 'title')">↺ <?php _e('Opnieuw genereren', 'rankrepair'); ?></button>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -941,7 +1181,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="rr-mm-field-actions">
                     <span class="rr-mm-char-badge <?php echo esc_attr($desc_char_class); ?>" id="rr-char-desc"><?php echo esc_html($desc_char_label); ?></span>
                     <?php if ($has_ai): ?>
-                    <button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(<?php echo (int)$item['id']; ?>, 'description')">
+                    <button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate('<?php echo esc_js($item['id']); ?>', 'description')">
                         ✨ <?php _e('AI suggestie', 'rankrepair'); ?>
                     </button>
                     <?php endif; ?>
@@ -967,10 +1207,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     <div class="rr-mm-ai-suggestion-box">
                         <p class="rr-mm-suggestion-text" id="rr-desc-suggestion"><?php echo esc_html($new_desc); ?></p>
                         <div class="rr-mm-suggestion-actions">
-                            <button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="<?php echo esc_attr($new_desc); ?>" onclick="rrMMAccept(<?php echo (int)$item['id']; ?>, 'description', this)">✓ <?php _e('Overnemen', 'rankrepair'); ?></button>
-                            <button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject(<?php echo (int)$item['id']; ?>, 'description', this)">✕ <?php _e('Afwijzen', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="<?php echo esc_attr($new_desc); ?>" onclick="rrMMAccept('<?php echo esc_js($item['id']); ?>', 'description', this)">✓ <?php _e('Overnemen', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject('<?php echo esc_js($item['id']); ?>', 'description', this)">✕ <?php _e('Afwijzen', 'rankrepair'); ?></button>
                             <?php if ($has_ai): ?>
-                            <button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate(<?php echo (int)$item['id']; ?>, 'description')">↺ <?php _e('Opnieuw genereren', 'rankrepair'); ?></button>
+                            <button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate('<?php echo esc_js($item['id']); ?>', 'description')">↺ <?php _e('Opnieuw genereren', 'rankrepair'); ?></button>
                             <?php endif; ?>
                         </div>
                     </div>

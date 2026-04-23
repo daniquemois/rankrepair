@@ -3,7 +3,7 @@
  * Plugin Name: RankRepair
  * Plugin URI: https://example.com/rankrepair
  * Description: Los veelvoorkomende SEO- en performance-problemen op met één klik. Dashboard met PageSpeed integratie en modulaire add-ons.
- * Version: 1.2.4
+ * Version: 1.3.0
  * Author: Danique
  * Author URI: https://example.com
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('RR_VERSION', '1.2.4');
+define('RR_VERSION', '1.3.0');
 define('RR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('RR_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('RR_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -43,6 +43,7 @@ final class RankRepair {
         $this->load_dependencies();
         $this->register_addons();
         $this->init_hooks();
+        $this->maybe_create_tables();
     }
 
     private function load_dependencies() {
@@ -63,20 +64,34 @@ final class RankRepair {
      */
     private function register_addons() {
         $addon_files = [
-            'meta-manager' => RR_PLUGIN_DIR . 'addons/meta-manager/class-addon-meta-manager.php',
-            // Toekomstige add-ons:
+            'meta-manager'      => RR_PLUGIN_DIR . 'addons/meta-manager/class-addon-meta-manager.php',
+            'structured-data'   => RR_PLUGIN_DIR . 'addons/structured-data/class-addon-structured-data.php',
             'redirects-checker' => RR_PLUGIN_DIR . 'addons/redirects-checker/class-addon-redirects-checker.php',
             'image-optimizer'   => RR_PLUGIN_DIR . 'addons/image-optimizer/class-addon-image-optimizer.php',
             'form-tester'       => RR_PLUGIN_DIR . 'addons/form-tester/class-addon-form-tester.php',
         ];
 
         foreach ($addon_files as $slug => $file) {
-            if (file_exists($file)) {
-                require_once $file;
-            }
+            if (!file_exists($file)) continue;
+            // Skip als addon expliciet is uitgeschakeld (default = aan)
+            if (get_option('rr_addon_' . $slug . '_enabled', '1') !== '1') continue;
+            require_once $file;
         }
 
         $this->addons = apply_filters('rr_registered_addons', $this->addons);
+    }
+
+    /**
+     * Lijst van beschikbare addons (ongeacht enabled-status) — voor dashboard.
+     */
+    public function get_available_addons() {
+        return [
+            'meta-manager'      => ['name' => __('AI Meta Rewriter', 'rankrepair'),      'icon' => '🤖', 'bg' => '#EDE9FE'],
+            'structured-data'   => ['name' => __('Structured Data', 'rankrepair'),       'icon' => '🔗', 'bg' => '#EDE9FE'],
+            'redirects-checker' => ['name' => __('Redirects Checker', 'rankrepair'),     'icon' => '↪️', 'bg' => '#DBEAFE'],
+            'image-optimizer'   => ['name' => __('Image Optimizer', 'rankrepair'),       'icon' => '🖼️', 'bg' => '#D1FAE5'],
+            'form-tester'       => ['name' => __('Formulieren Tester', 'rankrepair'),    'icon' => '📋', 'bg' => '#FEF3C7'],
+        ];
     }
 
     public function register_addon($slug, $addon_instance) {
@@ -92,11 +107,8 @@ final class RankRepair {
     }
 
     private function init_hooks() {
-        register_activation_hook(RR_PLUGIN_FILE, [$this, 'activate']);
         register_deactivation_hook(RR_PLUGIN_FILE, [$this, 'deactivate']);
 
-        // Zorg dat tabellen altijd bestaan, ook na handmatige plugin-upload
-        add_action('plugins_loaded', [$this, 'maybe_create_tables'], 5);
 
         add_action('admin_menu', [$this, 'register_admin_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
@@ -110,20 +122,22 @@ final class RankRepair {
 
     public function maybe_create_tables() {
         global $wpdb;
-        $table = $wpdb->prefix . 'rr_meta_data';
-        $exists = $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table) . "'") === $table;
-        if ( ! $exists ) {
+        $table          = $wpdb->prefix . 'rr_meta_data';
+        $exists         = $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table) . "'") === $table;
+        $db_version_ok  = get_option('rr_db_version') === RR_VERSION;
+
+        if ( ! $exists || ! $db_version_ok ) {
             $this->create_tables();
-            // Controleer of tabellen nu wel bestaan — toon admin notice als dat niet zo is
             $created = $wpdb->get_var("SHOW TABLES LIKE '" . $wpdb->esc_like($table) . "'") === $table;
-            if ( ! $created ) {
+            if ( $created ) {
+                update_option('rr_db_version', RR_VERSION);
+            } else {
                 $last_error = $wpdb->last_error;
                 add_action('admin_notices', function () use ($last_error) {
                     echo '<div class="notice notice-error"><p><strong>RankRepair:</strong> Database tabellen konden niet worden aangemaakt.' . ( $last_error ? ' MySQL-fout: <code>' . esc_html($last_error) . '</code>' : '' ) . '<br>Controleer of de databasegebruiker de <code>CREATE TABLE</code> rechten heeft.</p></div>';
                 });
             }
         } else {
-            // Voer migraties altijd uit, ook voor bestaande installaties
             $this->run_migrations();
         }
     }
@@ -136,6 +150,14 @@ final class RankRepair {
         $col = $wpdb->get_results("SHOW COLUMNS FROM $table_meta LIKE 'current_h1'");
         if (empty($col)) {
             $wpdb->query("ALTER TABLE $table_meta ADD COLUMN current_h1 varchar(500) DEFAULT NULL AFTER url");
+        }
+
+        // Migratie: entity_type + entity_subtype voor taxonomy support
+        $col = $wpdb->get_results("SHOW COLUMNS FROM $table_meta LIKE 'entity_type'");
+        if (empty($col)) {
+            $wpdb->query("ALTER TABLE $table_meta ADD COLUMN entity_type varchar(20) NOT NULL DEFAULT 'post' AFTER post_id");
+            $wpdb->query("ALTER TABLE $table_meta ADD COLUMN entity_subtype varchar(50) DEFAULT NULL AFTER entity_type");
+            $wpdb->query("ALTER TABLE $table_meta ADD INDEX entity_idx (entity_type, post_id)");
         }
     }
 
@@ -192,6 +214,8 @@ final class RankRepair {
         $sql_meta = "CREATE TABLE $table_meta (
   id bigint(20) NOT NULL AUTO_INCREMENT,
   post_id bigint(20) DEFAULT NULL,
+  entity_type varchar(20) NOT NULL DEFAULT 'post',
+  entity_subtype varchar(50) DEFAULT NULL,
   url varchar(500) NOT NULL,
   current_h1 varchar(500) DEFAULT NULL,
   current_title varchar(500) DEFAULT NULL,
@@ -208,7 +232,8 @@ final class RankRepair {
   PRIMARY KEY  (id),
   KEY url (url(191)),
   KEY status (status),
-  KEY post_id (post_id)
+  KEY post_id (post_id),
+  KEY entity_idx (entity_type, post_id)
 ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
@@ -444,5 +469,11 @@ function rr_decrypt_key($stored) {
     $dec = openssl_decrypt($enc, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
     return ($dec === false) ? '' : $dec;
 }
+
+// Activatie hook op file-niveau zodat hij ook vuurt bij eerste installatie,
+// voordat plugins_loaded heeft gefired voor deze plugin.
+register_activation_hook(RR_PLUGIN_FILE, function () {
+    RankRepair::get_instance()->activate();
+} );
 
 add_action('plugins_loaded', 'rankrepair');

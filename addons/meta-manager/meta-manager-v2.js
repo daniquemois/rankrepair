@@ -74,10 +74,10 @@
         var previewDesc  = d.newDesc  || d.desc  || '(geen meta omschrijving)';
 
         var aiBtn = (rrMetaManager && rrMetaManager.hasAI)
-            ? '<button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(' + d.id + ', \'title\')">✨ AI suggestie</button>'
+            ? '<button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(\'' + d.id + '\', \'title\')">✨ AI suggestie</button>'
             : '';
         var aiBtnDesc = (rrMetaManager && rrMetaManager.hasAI)
-            ? '<button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(' + d.id + ', \'description\')">✨ AI suggestie</button>'
+            ? '<button type="button" class="rr-mm-ai-btn" onclick="rrMMGenerate(\'' + d.id + '\', \'description\')">✨ AI suggestie</button>'
             : '';
 
         // Toon AI-suggestie alleen als die verschilt van de huidige waarde
@@ -216,15 +216,15 @@
         var textHtml = escHtml(textRaw);
         var textAttr = escAttr(textRaw);
         var regenBtn = (rrMetaManager && rrMetaManager.hasAI)
-            ? '<button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate(' + id + ', \'' + type + '\')">↺ Opnieuw genereren</button>'
+            ? '<button type="button" class="rr-btn rr-btn-secondary rr-btn-xs button" style="border-color:#C4B5FD;color:var(--rr-primary)" onclick="rrMMGenerate(\'' + id + '\', \'' + type + '\')">↺ Opnieuw genereren</button>'
             : '';
         return '<div class="rr-mm-ai-suggestion">' +
             '<span class="rr-mm-ai-suggestion-label">✨ AI suggestie</span>' +
             '<div class="rr-mm-ai-suggestion-box">' +
                 '<p class="rr-mm-suggestion-text">' + textHtml + '</p>' +
                 '<div class="rr-mm-suggestion-actions">' +
-                    '<button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="' + textAttr + '" onclick="rrMMAccept(' + id + ', \'' + type + '\', this)">✓ Overnemen</button>' +
-                    '<button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject(' + id + ', \'' + type + '\', this)">✕ Afwijzen</button>' +
+                    '<button type="button" class="rr-btn rr-btn-primary rr-btn-xs button" data-suggestion="' + textAttr + '" onclick="rrMMAccept(\'' + id + '\', \'' + type + '\', this)">✓ Overnemen</button>' +
+                    '<button type="button" class="rr-btn rr-btn-ghost rr-btn-xs button" onclick="rrMMReject(\'' + id + '\', \'' + type + '\', this)">✕ Afwijzen</button>' +
                     regenBtn +
                 '</div>' +
             '</div>' +
@@ -298,19 +298,92 @@
         });
     }
 
+    // Update alle stat counters (top bar + pills + sidebar tabs) op basis van verse server data
+    function updateAllStats(stats) {
+        if (!stats || typeof stats !== 'object') return;
+        $('[data-stat]').each(function() {
+            var key = $(this).data('stat');
+            if (typeof stats[key] !== 'undefined') {
+                $(this).text(stats[key]);
+            }
+        });
+        $('.rr-mm-pill').each(function() {
+            var key = $(this).data('pill');
+            if (!key) return;
+            var num = parseInt($(this).find('strong').text(), 10) || 0;
+            var isLink = $(this).is('a');
+            if (num <= 0 && isLink) {
+                // Replace anchor with span when it becomes 0
+                var $span = $('<span>').attr('class', $(this).attr('class') + ' rr-mm-pill--disabled')
+                                        .attr('data-pill', key)
+                                        .html($(this).html());
+                $(this).replaceWith($span);
+            } else if (num > 0 && !isLink) {
+                var $a = $('<a>').attr('href', '?page=rankrepair-meta-manager&filter=' + key)
+                                 .attr('class', $(this).attr('class').replace(/\brr-mm-pill--disabled\b/, '').trim())
+                                 .attr('data-pill', key)
+                                 .html($(this).html());
+                $(this).replaceWith($a);
+            }
+        });
+    }
+
+    // Pas huidige lijst-row aan op basis van verse server-data + verwijder als hij niet meer in actieve filter hoort
+    function applyRowUpdate(itemData, activeFilter) {
+        var $row = $('.rr-mm-page-row[data-id="' + itemData.id + '"]');
+        if (!$row.length) return;
+
+        // Badges (title + desc) op basis van nieuwe current_title/description
+        updateRowBadgesAfterSave($row, itemData.current_title || '', itemData.current_description || '');
+
+        // Check of de row nog in het actieve filter hoort
+        var titlePxVal = titlePx(itemData.current_title || '');
+        var descPxVal  = descPx(itemData.current_description || '');
+        var belongs = true;
+
+        if (activeFilter === 'issues') {
+            belongs = !itemData.current_title || !itemData.current_description ||
+                      itemData.is_duplicate_title || itemData.is_duplicate_description ||
+                      (itemData.title_length > 0 && itemData.title_length < 30) ||
+                      (itemData.description_length > 0 && itemData.description_length < 70) ||
+                      itemData.title_length > 60 || itemData.description_length > 160;
+        } else if (activeFilter === 'missing_title')    belongs = !itemData.current_title;
+        else if (activeFilter === 'title_too_short')    belongs = itemData.title_length > 0 && itemData.title_length < 30;
+        else if (activeFilter === 'title_too_long')     belongs = itemData.title_length > 60;
+        else if (activeFilter === 'duplicate_title')    belongs = !!itemData.is_duplicate_title;
+        else if (activeFilter === 'missing_desc')       belongs = !itemData.current_description;
+        else if (activeFilter === 'desc_too_short')     belongs = itemData.description_length > 0 && itemData.description_length < 70;
+        else if (activeFilter === 'desc_too_long')      belongs = itemData.description_length > 160;
+        else if (activeFilter === 'duplicate_desc')     belongs = !!itemData.is_duplicate_description;
+        else if (activeFilter === 'ai_ready')           belongs = false;
+        else if (activeFilter === 'ok')                 belongs = true;
+
+        if (!belongs) {
+            $row.fadeOut(200, function() { $(this).remove(); });
+        }
+    }
+
+    function getActiveFilter() {
+        var m = window.location.search.match(/[?&]filter=([^&]+)/);
+        return m ? decodeURIComponent(m[1]) : 'all';
+    }
+
     // Update row badges in the sidebar after a save
     function updateRowBadgesAfterSave($row, title, desc) {
         var $badges = $row.find('.rr-mm-field-badges .rr-mm-fbadge');
 
-        // Title badge (index 1) — pixel-based
-        var tPx = titlePx(title);
-        var tType = tPx === 0 ? 'danger' : (tPx > TITLE_MAX ? 'warning' : 'ok');
-        var tText = tPx === 0 ? '✗' : (tPx > TITLE_MAX ? '≈' : '✓');
+        var titleLen = (title || '').length;
+        var descLen  = (desc  || '').length;
+        var tPx      = titlePx(title);
+        var dPx      = descPx(desc);
 
-        // Desc badge (index 2) — pixel-based
-        var dPx = descPx(desc);
-        var dType = dPx === 0 ? 'danger' : (dPx > DESC_MAX ? 'warning' : 'ok');
-        var dText = dPx === 0 ? '✗' : (dPx > DESC_MAX ? '≈' : '✓');
+        var tType = tPx === 0 ? 'danger'
+                  : (tPx > TITLE_MAX || titleLen < 30 ? 'warning' : 'ok');
+        var tText = tPx === 0 ? '✗' : (tPx > TITLE_MAX || titleLen < 30 ? '≈' : '✓');
+
+        var dType = dPx === 0 ? 'danger'
+                  : (dPx > DESC_MAX || descLen < 70 ? 'warning' : 'ok');
+        var dText = dPx === 0 ? '✗' : (dPx > DESC_MAX || descLen < 70 ? '≈' : '✓');
 
         $badges.eq(1).attr('class', 'rr-mm-fbadge rr-mm-fbadge--' + tType).text(tText);
         $badges.eq(2).attr('class', 'rr-mm-fbadge rr-mm-fbadge--' + dType).text(dText);
@@ -401,6 +474,11 @@
                 if (h1) $activeRow.attr('data-h1', JSON.stringify([h1]));
                 updateRowBadgesAfterSave($activeRow, title, desc);
                 updateFooter(false, $activeRow.find('.rr-mm-page-name').text());
+
+                // Realtime stats + eventuele row-verwijdering
+                if (response.data.stats) updateAllStats(response.data.stats);
+                if (response.data.item)  applyRowUpdate(response.data.item, getActiveFilter());
+
                 rrShowToast('✓ Opgeslagen!');
             } else {
                 var msg = (response.data && response.data.message) ? response.data.message : 'Fout bij opslaan.';
@@ -520,34 +598,227 @@
     // ==========================================
     // Bulk AI (header button)
     // ==========================================
-    $('#rr-gemini-bulk').on('click', function() {
-        var $btn = $(this);
-        var ids  = (rrMetaManager.allFilteredIds && rrMetaManager.allFilteredIds.length)
-            ? rrMetaManager.allFilteredIds
-            : (function() { var a = []; $('.rr-mm-page-row').each(function() { a.push($(this).data('id')); }); return a; })();
-        if (!ids.length) return;
-        if (!confirm('AI wordt aangeroepen voor ' + ids.length + ' pagina\'s. Doorgaan?')) return;
+    function rrShowLoadingModal(total) {
+        var $overlay = $('<div id="rr-loading-overlay">');
+        var $modal   = $('<div id="rr-loading-modal">');
+
+        var $spin    = $('<div class="rr-loading-spinner">');
+        var $title   = $('<p class="rr-loading-title">').text('AI is aan het genereren...');
+        var $sub     = $('<p class="rr-loading-sub">').text('Even geduld, klik niet weg. Dit duurt ~4s per pagina.');
+        var $bar     = $('<div class="rr-loading-bar-wrap">').append($('<div class="rr-loading-bar">').css('width', '0%'));
+        var $prog    = $('<p class="rr-loading-prog">').text('0 / ' + total + ' pagina\'s verwerkt');
+        var $stats   = $('<p class="rr-loading-stats">').text('');
+
+        $modal.append($spin, $title, $sub, $bar, $prog, $stats);
+        $overlay.append($modal).appendTo('body');
+        $overlay.data('total', total);
+    }
+
+    function rrUpdateLoadingProgress(done, total, okCount, errCount) {
+        var pct = Math.round((done / total) * 100);
+        $('#rr-loading-overlay .rr-loading-bar').css('width', pct + '%');
+        $('#rr-loading-overlay .rr-loading-prog').text(done + ' / ' + total + ' pagina\'s verwerkt');
+        if (typeof okCount === 'number') {
+            $('#rr-loading-overlay .rr-loading-stats').text('✓ ' + okCount + ' gelukt · ✗ ' + errCount + ' mislukt');
+        }
+    }
+
+    function rrCloseLoadingModal() {
+        $('#rr-loading-overlay').remove();
+    }
+
+    function rrRunBulkAI(ids, $btn, fields) {
+        fields = (fields && fields.length) ? fields : ['title','desc'];
+        var CHUNK   = 5;
+        var total   = ids.length;
+        var chunks  = [];
+        for (var i = 0; i < ids.length; i += CHUNK) { chunks.push(ids.slice(i, i + CHUNK)); }
+
+        var allResults = [];
+        var allErrors  = [];
+        var processed  = 0;
 
         $btn.prop('disabled', true).text('Bezig met genereren...');
+        rrShowLoadingModal(total);
 
-        $.post(rrAdmin.ajaxUrl, {
-            action: 'rr_gemini_generate_bulk',
-            nonce:  rrAdmin.nonce,
-            ids:    ids
-        }, function(response) {
-            $btn.prop('disabled', false);
-            updateBulkBtn();
-            if (response.success && response.data.results && response.data.results.length) {
-                rrShowBulkReview(response.data.results);
-            } else {
-                var msg = (response.data && response.data.message) ? response.data.message : 'Fout bij genereren.';
-                alert('AI fout: ' + msg);
+        function nextChunk(idx) {
+            if (idx >= chunks.length) {
+                rrCloseLoadingModal();
+                $btn.prop('disabled', false);
+                updateBulkBtn();
+                if (allResults.length) {
+                    rrShowBulkReview(allResults, allErrors, fields);
+                } else {
+                    var msg = 'Geen resultaten gegenereerd.';
+                    if (allErrors.length && allErrors[0].reason) {
+                        msg += '\n\nReden: ' + allErrors[0].reason;
+                    }
+                    alert(msg);
+                }
+                return;
             }
-        }).fail(function() {
-            $btn.prop('disabled', false);
-            updateBulkBtn();
-            alert('Verbinding mislukt.');
+            var chunk = chunks[idx];
+            $.post(rrAdmin.ajaxUrl, {
+                action: 'rr_gemini_generate_bulk',
+                nonce:  rrAdmin.nonce,
+                ids:    chunk,
+                fields: fields
+            }, function(response) {
+                if (response.success && response.data) {
+                    if (response.data.results)       allResults = allResults.concat(response.data.results);
+                    if (response.data.errors_detail) allErrors  = allErrors.concat(response.data.errors_detail);
+                }
+                processed += chunk.length;
+                rrUpdateLoadingProgress(processed, total, allResults.length, allErrors.length);
+                nextChunk(idx + 1);
+            }).fail(function() {
+                processed += chunk.length;
+                $.each(chunk, function(_, id) {
+                    allErrors.push({ id: id, name: 'Pagina ' + id, reason: 'Verbindingsfout' });
+                });
+                rrUpdateLoadingProgress(processed, total, allResults.length, allErrors.length);
+                nextChunk(idx + 1);
+            });
+        }
+
+        nextChunk(0);
+    }
+
+    function rrShowBatchModal($btn) {
+        var issueIds = rrMetaManager.issueIds || {};
+        var sets = {
+            missingTitle: issueIds.missingTitle || [],
+            shortTitle:   issueIds.shortTitle   || [],
+            longTitle:    issueIds.longTitle    || [],
+            dupTitle:     issueIds.dupTitle     || [],
+            missingDesc:  issueIds.missingDesc  || [],
+            shortDesc:    issueIds.shortDesc    || [],
+            longDesc:     issueIds.longDesc     || [],
+            dupDesc:      issueIds.dupDesc      || [],
+        };
+
+        var labels = {
+            missingTitle: 'Ontbrekende titel',
+            shortTitle:   'Titel te kort',
+            longTitle:    'Titel te lang',
+            dupTitle:     'Dubbele titel',
+            missingDesc:  'Ontbrekende beschrijving',
+            shortDesc:    'Beschrijving te kort',
+            longDesc:     'Beschrijving te lang',
+            dupDesc:      'Dubbele beschrijving',
+        };
+
+        // Standaard-selectie op basis van actief filter
+        var filterToKeys = {
+            missing_title:   ['missingTitle'],
+            title_too_short: ['shortTitle'],
+            title_too_long:  ['longTitle'],
+            duplicate_title: ['dupTitle'],
+            missing_desc:    ['missingDesc'],
+            desc_too_short:  ['shortDesc'],
+            desc_too_long:   ['longDesc'],
+            duplicate_desc:  ['dupDesc'],
+        };
+        var activeFilter = rrMetaManager.activeFilter || 'all';
+        var defaultKeys  = filterToKeys[activeFilter] || Object.keys(sets);
+
+        var $overlay = $('<div id="rr-batch-overlay">');
+        var $modal   = $('<div id="rr-batch-modal">');
+
+        var $checks = $('<div class="rr-batch-checks">');
+        $.each(sets, function(key, arr) {
+            if (!arr.length) return;
+            var isDefault = defaultKeys.indexOf(key) !== -1;
+            $checks.append(
+                $('<label class="rr-batch-check-row">').append(
+                    $('<input type="checkbox" class="rr-batch-cb">').attr('data-key', key).prop('checked', isDefault),
+                    $('<span class="rr-batch-cb-label">').text(labels[key]),
+                    $('<span class="rr-batch-cb-count">').text(arr.length)
+                )
+            );
         });
+
+        var $total = $('<p class="rr-batch-info">');
+        var $field = $('<div class="rr-batch-field">').append(
+            $('<label for="rr-batch-input">').text('Maximum per keer'),
+            $('<input type="number" id="rr-batch-input" min="1">').val(100)
+        );
+        var $confirmBtn = $('<button class="rr-batch-confirm">').text('Doorgaan');
+
+        $modal.append(
+            $('<p class="rr-batch-title">').text('Welke fouten herschrijven met AI?'),
+            $checks,
+            $total,
+            $field,
+            $('<div class="rr-batch-actions">').append(
+                $('<button class="rr-batch-cancel">').text('Annuleren'),
+                $confirmBtn
+            )
+        );
+        $overlay.append($modal).appendTo('body');
+
+        function getSelectedIds() {
+            var merged = {};
+            $modal.find('.rr-batch-cb:checked').each(function() {
+                var key = $(this).data('key');
+                $.each(sets[key], function(_, id) { merged[String(id)] = true; });
+            });
+            return Object.keys(merged);
+        }
+
+        function getSelectedFields() {
+            var fields = {};
+            $modal.find('.rr-batch-cb:checked').each(function() {
+                var key = $(this).data('key');
+                if (key.indexOf('Title') !== -1) fields.title = true;
+                if (key.indexOf('Desc')  !== -1) fields.desc  = true;
+            });
+            return Object.keys(fields);
+        }
+
+        function updateTotal() {
+            var ids   = getSelectedIds();
+            var limit = Math.min(parseInt($('#rr-batch-input').val(), 10) || 100, ids.length);
+            $('#rr-batch-input').attr('max', ids.length);
+            $total.text(ids.length + ' pagina\'s geselecteerd — er worden er maximaal ' + limit + ' verwerkt.');
+            $confirmBtn.prop('disabled', !ids.length).text(ids.length ? 'Doorgaan' : 'Geen selectie');
+        }
+
+        $modal.on('change', '.rr-batch-cb, #rr-batch-input', updateTotal);
+        updateTotal();
+        $('#rr-batch-input').focus().select();
+
+        function closeModal() { $overlay.remove(); }
+        $overlay.on('click', function(e) { if ($(e.target).is('#rr-batch-overlay')) closeModal(); });
+        $modal.find('.rr-batch-cancel').on('click', closeModal);
+
+        $confirmBtn.on('click', function() {
+            var ids    = getSelectedIds();
+            var fields = getSelectedFields();
+            var limit  = parseInt($('#rr-batch-input').val(), 10) || 100;
+            if (limit < 1 || isNaN(limit)) limit = 100;
+            if (limit > ids.length) limit = ids.length;
+            closeModal();
+            var batch = ids.slice(0, limit);
+            if (!confirm('AI wordt aangeroepen voor ' + batch.length + ' pagina\'s. Doorgaan?')) return;
+            rrRunBulkAI(batch, $btn, fields);
+        });
+
+        $modal.find('#rr-batch-input').on('keydown', function(e) {
+            if (e.key === 'Enter') $confirmBtn.trigger('click');
+            if (e.key === 'Escape') closeModal();
+        });
+    }
+
+    $('#rr-gemini-bulk').on('click', function() {
+        var $btn     = $(this);
+        var issueIds = rrMetaManager.issueIds || {};
+        var hasAny   = (issueIds.missingTitle || []).length || (issueIds.missingDesc || []).length ||
+                       (issueIds.dupTitle || []).length     || (issueIds.dupDesc || []).length ||
+                       (issueIds.longTitle || []).length    || (issueIds.longDesc || []).length ||
+                       (issueIds.shortTitle || []).length   || (issueIds.shortDesc || []).length;
+        if (!hasAny) { alert('Geen pagina\'s met fouten gevonden.'); return; }
+        rrShowBatchModal($btn);
     });
 
     // Scan verwijderd — data wordt live geladen bij elke paginaload
@@ -723,41 +994,151 @@
     // Bulk review modal
     // ==========================================
 
-    function rrShowBulkReview(results) {
+    function rrShowBulkReview(results, errors, fields) {
+        errors = errors || [];
+        fields = (fields && fields.length) ? fields : ['title','desc'];
+        var wantTitle = fields.indexOf('title') !== -1;
+        var wantDesc  = fields.indexOf('desc')  !== -1;
         var $overlay = $('<div id="rr-bulk-overlay">');
         var $modal   = $('<div id="rr-bulk-modal">');
 
         // Header
+        var headerCount = results.length + ' gelukt' + (errors.length ? ' · ' + errors.length + ' mislukt' : '');
         var $header = $('<div class="rr-bulk-header">')
             .append($('<h2 class="rr-bulk-title">').text('AI-suggesties controleren'))
-            .append($('<span class="rr-bulk-count">').text(results.length + ' pagina\'s gegenereerd'))
+            .append($('<span class="rr-bulk-count">').text(headerCount))
             .append($('<button type="button" class="rr-bulk-close-btn" id="rr-bulk-close">').html('&times;'));
 
         // Body — one card per result
         var $body = $('<div class="rr-bulk-body">');
+
+        // Errors banner
+        if (errors.length) {
+            var $errWrap = $('<details class="rr-bulk-errors">');
+            $errWrap.append(
+                $('<summary>').text('⚠ ' + errors.length + ' pagina\'s mislukt — klik voor details')
+            );
+            var $errList = $('<ul class="rr-bulk-err-list">');
+            $.each(errors, function(_, err) {
+                $errList.append(
+                    $('<li>').append(
+                        $('<span class="rr-bulk-err-name">').text(err.name || ('Pagina ' + err.id)),
+                        $('<span class="rr-bulk-err-reason">').text(err.reason || 'Onbekende fout')
+                    )
+                );
+            });
+            $errWrap.append($errList);
+            $body.append($errWrap);
+        }
+
+        // Tel dubbele AI-suggesties binnen deze batch — deze leveren nieuwe duplicaten op
+        var titleCounts = {};
+        var descCounts  = {};
+        $.each(results, function(_, item) {
+            if (wantTitle && item.title) titleCounts[item.title] = (titleCounts[item.title] || 0) + 1;
+            if (wantDesc  && item.description) descCounts[item.description] = (descCounts[item.description] || 0) + 1;
+        });
+        var dupTitleCount = 0, dupDescCount = 0;
+        $.each(titleCounts, function(_, c) { if (c > 1) dupTitleCount += c; });
+        $.each(descCounts,  function(_, c) { if (c > 1) dupDescCount  += c; });
+
+        if (dupTitleCount || dupDescCount) {
+            var dupMsg = '⚠ Identieke AI-suggesties gevonden';
+            var parts = [];
+            if (dupTitleCount) parts.push(dupTitleCount + ' pagina\'s met zelfde titel');
+            if (dupDescCount)  parts.push(dupDescCount + ' pagina\'s met zelfde beschrijving');
+            var $dupWarn = $('<div class="rr-bulk-dup-warn">')
+                .append($('<strong>').text(dupMsg))
+                .append($('<p>').text('Deze leveren nieuwe duplicaten op als je ze opslaat. ' + parts.join(' · ') + '. Pas ze aan of regenereer.'))
+                .append($('<button type="button" class="rr-btn rr-btn-secondary rr-btn-sm button" id="rr-bulk-regen-dups">').text('↺ Alle dubbele suggesties opnieuw genereren'));
+            $body.append($dupWarn);
+        }
+
         $.each(results, function(_, item) {
             var name     = item.name         || ('Pagina ' + item.id);
             var curTitle = item.current_title || '';
             var curDesc  = item.current_desc  || '';
 
-            var $card = $('<div class="rr-bulk-card">').attr('data-id', item.id);
+            var isDupTitle = wantTitle && item.title && titleCounts[item.title] > 1;
+            var isDupDesc  = wantDesc  && item.description && descCounts[item.description] > 1;
+            var cardClass  = 'rr-bulk-card' + ((isDupTitle || isDupDesc) ? ' rr-bulk-card--dup' : '');
+
+            var $card = $('<div class="' + cardClass + '">').attr('data-id', item.id);
             $card.append($('<div class="rr-bulk-card-name">').text(name));
+            if (isDupTitle || isDupDesc) {
+                var dupLabels = [];
+                if (isDupTitle) dupLabels.push('titel identiek aan ' + (titleCounts[item.title] - 1) + ' andere');
+                if (isDupDesc)  dupLabels.push('beschrijving identiek aan ' + (descCounts[item.description] - 1) + ' andere');
+                $card.append($('<div class="rr-bulk-card-dup">').text('⚠ ' + dupLabels.join(' · ')));
+            }
 
             var $cols = $('<div class="rr-bulk-cols">');
 
             // Title column
+            var curTitlePx = titlePx(curTitle);
             var $tc = $('<div class="rr-bulk-col">');
-            $tc.append($('<label class="rr-bulk-lbl">').text('Huidige titel'));
+            $tc.append(
+                $('<div class="rr-bulk-lbl-row">').append(
+                    $('<label class="rr-bulk-lbl">').text('Huidige titel'),
+                    $('<span class="rr-bulk-px ' + pxClass(curTitlePx, TITLE_MAX) + '">').text(pxLabel(curTitlePx, TITLE_MAX))
+                )
+            );
             $tc.append($('<div class="rr-bulk-cur">').text(curTitle || '(geen)'));
-            $tc.append($('<label class="rr-bulk-lbl rr-bulk-lbl--ai">').text('AI-suggestie titel'));
-            $tc.append($('<input type="text" class="rr-bulk-field-title">').val(item.title));
+
+            if (wantTitle) {
+                var aiTitlePx       = titlePx(item.title);
+                var $aiTitlePxBadge = $('<span class="rr-bulk-px ' + pxClass(aiTitlePx, TITLE_MAX) + '">').text(pxLabel(aiTitlePx, TITLE_MAX));
+                var $regenTitle     = $('<button type="button" class="rr-bulk-regen" title="Opnieuw genereren">').html('&#x21bb;');
+                $tc.append(
+                    $('<div class="rr-bulk-lbl-row">').append(
+                        $('<label class="rr-bulk-lbl rr-bulk-lbl--ai">').text('AI-suggestie titel'),
+                        $('<span class="rr-bulk-lbl-right">').append($aiTitlePxBadge, $regenTitle)
+                    )
+                );
+                var $titleInput = $('<input type="text" class="rr-bulk-field-title">').val(item.title);
+                $titleInput.on('input', function() {
+                    var px = titlePx($(this).val());
+                    $aiTitlePxBadge.text(pxLabel(px, TITLE_MAX)).attr('class', 'rr-bulk-px ' + pxClass(px, TITLE_MAX));
+                });
+                $tc.append($titleInput);
+
+                $regenTitle.on('click', function() {
+                    rrRegenerateField(item.id, 'title', $titleInput, $aiTitlePxBadge, $(this));
+                });
+            }
 
             // Description column
+            var curDescPx = descPx(curDesc);
             var $dc = $('<div class="rr-bulk-col">');
-            $dc.append($('<label class="rr-bulk-lbl">').text('Huidige beschrijving'));
+            $dc.append(
+                $('<div class="rr-bulk-lbl-row">').append(
+                    $('<label class="rr-bulk-lbl">').text('Huidige beschrijving'),
+                    $('<span class="rr-bulk-px ' + pxClass(curDescPx, DESC_MAX) + '">').text(pxLabel(curDescPx, DESC_MAX))
+                )
+            );
             $dc.append($('<div class="rr-bulk-cur">').text(curDesc || '(geen)'));
-            $dc.append($('<label class="rr-bulk-lbl rr-bulk-lbl--ai">').text('AI-suggestie beschrijving'));
-            $dc.append($('<textarea class="rr-bulk-field-desc" rows="3">').val(item.description));
+
+            if (wantDesc) {
+                var aiDescPx       = descPx(item.description);
+                var $aiDescPxBadge = $('<span class="rr-bulk-px ' + pxClass(aiDescPx, DESC_MAX) + '">').text(pxLabel(aiDescPx, DESC_MAX));
+                var $regenDesc     = $('<button type="button" class="rr-bulk-regen" title="Opnieuw genereren">').html('&#x21bb;');
+                $dc.append(
+                    $('<div class="rr-bulk-lbl-row">').append(
+                        $('<label class="rr-bulk-lbl rr-bulk-lbl--ai">').text('AI-suggestie beschrijving'),
+                        $('<span class="rr-bulk-lbl-right">').append($aiDescPxBadge, $regenDesc)
+                    )
+                );
+                var $descArea = $('<textarea class="rr-bulk-field-desc" rows="3">').val(item.description);
+                $descArea.on('input', function() {
+                    var px = descPx($(this).val());
+                    $aiDescPxBadge.text(pxLabel(px, DESC_MAX)).attr('class', 'rr-bulk-px ' + pxClass(px, DESC_MAX));
+                });
+                $dc.append($descArea);
+
+                $regenDesc.on('click', function() {
+                    rrRegenerateField(item.id, 'desc', $descArea, $aiDescPxBadge, $(this));
+                });
+            }
 
             $cols.append($tc, $dc);
             $card.append($cols);
@@ -778,16 +1159,67 @@
             $overlay.remove();
         });
 
+        // Regenereer alle cards met dubbele AI-suggesties
+        $overlay.on('click', '#rr-bulk-regen-dups', function() {
+            var $dupBtn = $(this);
+            var $dupCards = $overlay.find('.rr-bulk-card--dup');
+            if (!$dupCards.length) return;
+            $dupBtn.prop('disabled', true).text('Bezig...');
+            var total = $dupCards.length;
+            var done  = 0;
+
+            $dupCards.each(function() {
+                var $card = $(this);
+                var id    = $card.data('id');
+                var $titleInput = $card.find('.rr-bulk-field-title');
+                var $descArea   = $card.find('.rr-bulk-field-desc');
+                var $titleBadge = $card.find('.rr-bulk-col').eq(0).find('.rr-bulk-lbl-right .rr-bulk-px');
+                var $descBadge  = $card.find('.rr-bulk-col').eq(1).find('.rr-bulk-lbl-right .rr-bulk-px');
+
+                $.post(rrAdmin.ajaxUrl, {
+                    action: 'rr_gemini_generate',
+                    nonce:  rrAdmin.nonce,
+                    id:     id
+                }, function(response) {
+                    if (response.success) {
+                        if ($titleInput.length && response.data.title) {
+                            $titleInput.val(response.data.title).trigger('input');
+                            var tPx = titlePx(response.data.title);
+                            $titleBadge.text(pxLabel(tPx, TITLE_MAX)).attr('class', 'rr-bulk-px ' + pxClass(tPx, TITLE_MAX));
+                        }
+                        if ($descArea.length && response.data.description) {
+                            $descArea.val(response.data.description).trigger('input');
+                            var dPx = descPx(response.data.description);
+                            $descBadge.text(pxLabel(dPx, DESC_MAX)).attr('class', 'rr-bulk-px ' + pxClass(dPx, DESC_MAX));
+                        }
+                        $card.removeClass('rr-bulk-card--dup');
+                        $card.find('.rr-bulk-card-dup').remove();
+                    }
+                }).always(function() {
+                    done++;
+                    $dupBtn.text('Bezig... (' + done + ' / ' + total + ')');
+                    if (done === total) {
+                        $dupBtn.prop('disabled', false).text('↺ Alle dubbele suggesties opnieuw genereren');
+                        // Herbereken dup counts en verberg banner als geen dupes meer
+                        if ($overlay.find('.rr-bulk-card--dup').length === 0) {
+                            $overlay.find('.rr-bulk-dup-warn').fadeOut(300);
+                        }
+                    }
+                });
+            });
+        });
+
         // Save all
         $overlay.on('click', '#rr-bulk-save', function() {
             var $saveBtn = $(this);
             var items = [];
             $overlay.find('.rr-bulk-card').each(function() {
-                items.push({
-                    id:    $(this).data('id'),
-                    title: $(this).find('.rr-bulk-field-title').val(),
-                    desc:  $(this).find('.rr-bulk-field-desc').val()
-                });
+                var $titleEl = $(this).find('.rr-bulk-field-title');
+                var $descEl  = $(this).find('.rr-bulk-field-desc');
+                var entry    = { id: $(this).data('id') };
+                if ($titleEl.length) entry.title = $titleEl.val();
+                if ($descEl.length)  entry.desc  = $descEl.val();
+                items.push(entry);
             });
 
             $saveBtn.prop('disabled', true).text('Opslaan...');
@@ -799,14 +1231,27 @@
             }, function(response) {
                 if (response.success) {
                     $overlay.remove();
-                    // Update list rows with saved suggestions
+                    var activeFilter = getActiveFilter();
+
+                    // Realtime: update stats + rows met verse server-data
+                    if (response.data.stats) updateAllStats(response.data.stats);
+                    if (response.data.items && response.data.items.length) {
+                        $.each(response.data.items, function(_, itemData) {
+                            applyRowUpdate(itemData, activeFilter);
+                        });
+                    }
+
+                    // Update lokale row-data voor toekomstig gebruik
                     $.each(items, function(_, item) {
                         var $row = $('.rr-mm-page-row[data-id="' + item.id + '"]');
-                        $row.attr('data-new-title', item.title).attr('data-new-desc', item.desc);
-                        $row.data('new-title', item.title).data('new-desc', item.desc);
-                        updateRowBadgesAfterSave($row, item.title, item.desc);
+                        if (typeof item.title !== 'undefined') {
+                            $row.attr('data-new-title', item.title).data('new-title', item.title);
+                        }
+                        if (typeof item.desc !== 'undefined') {
+                            $row.attr('data-new-desc', item.desc).data('new-desc', item.desc);
+                        }
                     });
-                    // Refresh active panel
+
                     if (currentPageId) {
                         var $active = $('.rr-mm-page-row.active');
                         if ($active.length) rrMMSelectPage($active[0]);
@@ -821,6 +1266,32 @@
                 $saveBtn.prop('disabled', false).text('Alles opslaan (' + items.length + ')');
                 rrShowToast('✗ Verbindingsfout bij opslaan.', true);
             });
+        });
+    }
+
+    function rrRegenerateField(id, field, $input, $badge, $btn) {
+        var max   = field === 'title' ? TITLE_MAX : DESC_MAX;
+        var measure = field === 'title' ? titlePx : descPx;
+        $btn.prop('disabled', true).addClass('rr-bulk-regen--loading');
+
+        $.post(rrAdmin.ajaxUrl, {
+            action: 'rr_gemini_generate',
+            nonce:  rrAdmin.nonce,
+            id:     id
+        }, function(response) {
+            $btn.prop('disabled', false).removeClass('rr-bulk-regen--loading');
+            if (response.success) {
+                var val = (field === 'title') ? response.data.title : response.data.description;
+                $input.val(val).trigger('input');
+                var px = measure(val);
+                $badge.text(pxLabel(px, max)).attr('class', 'rr-bulk-px ' + pxClass(px, max));
+            } else {
+                var msg = (response.data && response.data.message) ? response.data.message : 'Fout bij genereren.';
+                alert('AI fout: ' + msg);
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).removeClass('rr-bulk-regen--loading');
+            alert('Verbindingsfout.');
         });
     }
 
