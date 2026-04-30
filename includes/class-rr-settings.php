@@ -124,6 +124,44 @@ class RR_Settings {
         return $sections;
     }
 
+    private function render_review_row($r, $index): void {
+        $r = is_array($r) ? $r : [];
+        $name           = $r['name']           ?? '';
+        $body           = $r['reviewBody']     ?? '';
+        $date           = $r['datePublished']  ?? '';
+        $author_type    = $r['author_type']    ?? 'Organization';
+        $author_name    = $r['author_name']    ?? '';
+        $rating         = $r['ratingValue']    ?? '';
+        ?>
+        <div class="rr-review-row" data-index="<?php echo esc_attr($index); ?>">
+            <div class="rr-review-grid">
+                <label><span><?php esc_html_e('Review titel', 'rankrepair'); ?></span>
+                    <input type="text" data-field="name" value="<?php echo esc_attr($name); ?>" placeholder="<?php esc_attr_e('Bijv. "Zeer tevreden"', 'rankrepair'); ?>">
+                </label>
+                <label><span><?php esc_html_e('Datum', 'rankrepair'); ?></span>
+                    <input type="date" data-field="datePublished" value="<?php echo esc_attr($date); ?>">
+                </label>
+                <label class="rr-review-full"><span><?php esc_html_e('Review tekst', 'rankrepair'); ?></span>
+                    <textarea data-field="reviewBody" rows="2" placeholder="<?php esc_attr_e('De inhoud van de review...', 'rankrepair'); ?>"><?php echo esc_textarea($body); ?></textarea>
+                </label>
+                <label><span><?php esc_html_e('Auteur type', 'rankrepair'); ?></span>
+                    <select data-field="author_type">
+                        <option value="Organization" <?php selected($author_type, 'Organization'); ?>><?php esc_html_e('Bedrijf', 'rankrepair'); ?></option>
+                        <option value="Person"       <?php selected($author_type, 'Person'); ?>><?php esc_html_e('Persoon', 'rankrepair'); ?></option>
+                    </select>
+                </label>
+                <label><span><?php esc_html_e('Auteur naam', 'rankrepair'); ?></span>
+                    <input type="text" data-field="author_name" value="<?php echo esc_attr($author_name); ?>" placeholder="<?php esc_attr_e('Bijv. "BHV Specialist"', 'rankrepair'); ?>">
+                </label>
+                <label><span><?php esc_html_e('Rating (optioneel)', 'rankrepair'); ?></span>
+                    <input type="number" step="0.1" min="1" max="5" data-field="ratingValue" value="<?php echo esc_attr($rating); ?>" placeholder="<?php esc_attr_e('4.8', 'rankrepair'); ?>">
+                </label>
+            </div>
+            <button type="button" class="button-link rr-review-remove">✕ <?php esc_html_e('Verwijderen', 'rankrepair'); ?></button>
+        </div>
+        <?php
+    }
+
     /**
      * Render een icoon voor een sectie — kiest een mooi SVG-icoon op basis van de section id.
      */
@@ -227,6 +265,39 @@ class RR_Settings {
                 }
                 echo '</div>';
                 break;
+
+            case 'reviews_repeater':
+                // Legacy — niet meer in gebruik, data blijft bewaard.
+                echo '<em style="color:#6b7280">' . esc_html__('Verplaatst naar "Eigen JSON-LD". Dit veld is uitgefaseerd.', 'rankrepair') . '</em>';
+                break;
+
+            case 'json_textarea':
+                $rows  = (int) ($f['rows'] ?? 12);
+                $valid = true;
+                $count = 0;
+                if (trim($value) !== '') {
+                    $test = trim($value);
+                    // strip <script>
+                    if (preg_match('#<script[^>]*>(.*?)</script>#is', $test, $m)) $test = trim($m[1]);
+                    $decoded = json_decode($test, true);
+                    $valid = is_array($decoded);
+                    if ($valid) {
+                        if (isset($decoded['@graph']) && is_array($decoded['@graph']))        $count = count($decoded['@graph']);
+                        elseif (isset($decoded['@type']))                                     $count = 1;
+                        elseif (array_keys($decoded) === range(0, count($decoded) - 1))       $count = count($decoded);
+                    }
+                }
+                echo '<textarea id="' . esc_attr($name) . '" name="' . esc_attr($name) . '" class="large-text rr-json-textarea" rows="' . $rows . '" spellcheck="false" placeholder="' . esc_attr('{"@context":"https://schema.org","@graph":[…]}') . '">' . esc_textarea($value) . '</textarea>';
+                echo '<p class="rr-json-feedback">';
+                if (trim($value) === '') {
+                    echo '<span style="color:#6b7280">' . esc_html__('Leeg — niks wordt toegevoegd.', 'rankrepair') . '</span>';
+                } elseif ($valid) {
+                    echo '<span style="color:#059669">✓ ' . esc_html(sprintf(__('Geldige JSON — %d schema%s gevonden', 'rankrepair'), $count, $count === 1 ? '' : '\'s')) . '</span>';
+                } else {
+                    echo '<span style="color:#dc2626">✗ ' . esc_html__('Ongeldige JSON — controleer de syntax', 'rankrepair') . '</span>';
+                }
+                echo '</p>';
+                break;
         }
 
         if (!empty($desc)) {
@@ -272,6 +343,33 @@ class RR_Settings {
                         $val = isset($_POST[$opt_name]) ? sanitize_text_field($_POST[$opt_name]) : '0';
                         update_option($opt_name, $val === '1' ? '1' : '0');
                     }
+                    continue;
+                }
+
+                if ($type === 'json_textarea') {
+                    // Bewaar ruwe JSON-string (zonder sanitize_textarea_field dat " zou escapen).
+                    update_option($name, wp_unslash($_POST[$name]));
+                    continue;
+                }
+
+                if ($type === 'reviews_repeater') {
+                    // Sla raw JSON op (gesanitized) — builder decodeert en strips bij output
+                    $raw = wp_unslash($_POST[$name]);
+                    $arr = json_decode($raw, true);
+                    if (!is_array($arr)) { $arr = []; }
+                    $clean = [];
+                    foreach ($arr as $r) {
+                        if (!is_array($r)) continue;
+                        $clean[] = [
+                            'name'          => sanitize_text_field($r['name'] ?? ''),
+                            'reviewBody'    => sanitize_textarea_field($r['reviewBody'] ?? ''),
+                            'datePublished' => sanitize_text_field($r['datePublished'] ?? ''),
+                            'author_type'   => ($r['author_type'] ?? '') === 'Person' ? 'Person' : 'Organization',
+                            'author_name'   => sanitize_text_field($r['author_name'] ?? ''),
+                            'ratingValue'   => sanitize_text_field($r['ratingValue'] ?? ''),
+                        ];
+                    }
+                    update_option($name, wp_json_encode($clean));
                     continue;
                 }
 

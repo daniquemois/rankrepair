@@ -96,9 +96,9 @@
         if (h1sArr.length === 0)        issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--danger">H1 ontbreekt</span>';
         else if (h1sArr.length > 1)     issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--warning">Meerdere H1\'s</span>';
         if (titleLen === 0)             issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--danger">Titel ontbreekt</span>';
-        else if (titleLen > 60)         issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--warning">Titel te lang</span>';
+        else if (titleLen > TITLE_MAX_CHARS) issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--warning">Titel te lang</span>';
         if (descLen === 0)              issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--danger">Omschrijving ontbreekt</span>';
-        else if (descLen > 160)         issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--warning">Omschrijving te lang</span>';
+        else if (descLen > DESC_MAX_CHARS) issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--warning">Omschrijving te lang</span>';
         if (d.newTitle && d.status !== 'applied') issueBadges += '<span class="rr-mm-issue-badge rr-mm-issue-badge--indigo">AI suggesties klaar</span>';
 
         var html =
@@ -344,16 +344,16 @@
         if (activeFilter === 'issues') {
             belongs = !itemData.current_title || !itemData.current_description ||
                       itemData.is_duplicate_title || itemData.is_duplicate_description ||
-                      (itemData.title_length > 0 && itemData.title_length < 30) ||
-                      (itemData.description_length > 0 && itemData.description_length < 70) ||
-                      itemData.title_length > 60 || itemData.description_length > 160;
+                      (itemData.title_length > 0 && itemData.title_length < TITLE_MIN_CHARS) ||
+                      (itemData.description_length > 0 && itemData.description_length < DESC_MIN_CHARS) ||
+                      itemData.title_length > TITLE_MAX_CHARS || itemData.description_length > DESC_MAX_CHARS;
         } else if (activeFilter === 'missing_title')    belongs = !itemData.current_title;
-        else if (activeFilter === 'title_too_short')    belongs = itemData.title_length > 0 && itemData.title_length < 30;
-        else if (activeFilter === 'title_too_long')     belongs = itemData.title_length > 60;
+        else if (activeFilter === 'title_too_short')    belongs = itemData.title_length > 0 && itemData.title_length < TITLE_MIN_CHARS;
+        else if (activeFilter === 'title_too_long')     belongs = itemData.title_length > TITLE_MAX_CHARS;
         else if (activeFilter === 'duplicate_title')    belongs = !!itemData.is_duplicate_title;
         else if (activeFilter === 'missing_desc')       belongs = !itemData.current_description;
-        else if (activeFilter === 'desc_too_short')     belongs = itemData.description_length > 0 && itemData.description_length < 70;
-        else if (activeFilter === 'desc_too_long')      belongs = itemData.description_length > 160;
+        else if (activeFilter === 'desc_too_short')     belongs = itemData.description_length > 0 && itemData.description_length < DESC_MIN_CHARS;
+        else if (activeFilter === 'desc_too_long')      belongs = itemData.description_length > DESC_MAX_CHARS;
         else if (activeFilter === 'duplicate_desc')     belongs = !!itemData.is_duplicate_description;
         else if (activeFilter === 'ai_ready')           belongs = false;
         else if (activeFilter === 'ok')                 belongs = true;
@@ -378,12 +378,12 @@
         var dPx      = descPx(desc);
 
         var tType = tPx === 0 ? 'danger'
-                  : (tPx > TITLE_MAX || titleLen < 30 ? 'warning' : 'ok');
-        var tText = tPx === 0 ? '✗' : (tPx > TITLE_MAX || titleLen < 30 ? '≈' : '✓');
+                  : (tPx > TITLE_MAX || titleLen < TITLE_MIN_CHARS || titleLen > TITLE_MAX_CHARS ? 'warning' : 'ok');
+        var tText = tPx === 0 ? '✗' : (tPx > TITLE_MAX || titleLen < TITLE_MIN_CHARS || titleLen > TITLE_MAX_CHARS ? '≈' : '✓');
 
         var dType = dPx === 0 ? 'danger'
-                  : (dPx > DESC_MAX || descLen < 70 ? 'warning' : 'ok');
-        var dText = dPx === 0 ? '✗' : (dPx > DESC_MAX || descLen < 70 ? '≈' : '✓');
+                  : (dPx > DESC_MAX || descLen < DESC_MIN_CHARS || descLen > DESC_MAX_CHARS ? 'warning' : 'ok');
+        var dText = dPx === 0 ? '✗' : (dPx > DESC_MAX || descLen < DESC_MIN_CHARS || descLen > DESC_MAX_CHARS ? '≈' : '✓');
 
         $badges.eq(1).attr('class', 'rr-mm-fbadge rr-mm-fbadge--' + tType).text(tText);
         $badges.eq(2).attr('class', 'rr-mm-fbadge rr-mm-fbadge--' + dType).text(dText);
@@ -934,6 +934,11 @@
     var DESC_FONT  = 'normal 14px Arial,sans-serif';
     var TITLE_MAX  = 580; // px — Google truncates ~580px
     var DESC_MAX   = 920; // px — Google truncates ~920px
+    // Char-based drempels (matchen PHP self::TITLE_MIN/MAX, DESC_MIN/MAX)
+    var TITLE_MIN_CHARS = 30;
+    var TITLE_MAX_CHARS = 60;
+    var DESC_MIN_CHARS  = 70;
+    var DESC_MAX_CHARS  = 158;
 
     function titlePx(text)  { return measureTextPx(text, TITLE_FONT); }
     function descPx(text)   { return measureTextPx(text, DESC_FONT); }
@@ -1292,6 +1297,140 @@
         }).fail(function() {
             $btn.prop('disabled', false).removeClass('rr-bulk-regen--loading');
             alert('Verbindingsfout.');
+        });
+    }
+
+    // ==========================================
+    // Live HTML scan — fetcht gerenderde HTML en parsed <title> + <meta description>
+    // Komt 1-op-1 overeen met wat SE Ranking ziet.
+    // ==========================================
+
+    $('#rr-html-scan-btn').on('click', function() {
+        var ids = (window.rrMetaManager && rrMetaManager.allFilteredIds) || [];
+        if (!ids.length) {
+            alert('Geen pagina\'s gevonden om te scannen.');
+            return;
+        }
+
+        var msg = 'Live HTML scan haalt voor elke pagina de gerenderde HTML op en leest <title> + <meta description>. ' +
+                  'Dit kost ongeveer 1 seconde per pagina.\n\n' +
+                  'Wil je ' + ids.length + ' pagina(s) scannen?';
+        if (!confirm(msg)) return;
+
+        rrRunHtmlScan(ids);
+    });
+
+    function rrRunHtmlScan(ids) {
+        var total      = ids.length;
+        var done       = 0;
+        var failed     = 0;
+        var chunkSize  = 5;
+        var concurrent = 2; // 2 chunks parallel = 10 URLs tegelijk
+
+        // Modal
+        var $overlay = $(
+            '<div class="rr-bulk-overlay" id="rr-html-scan-overlay">' +
+              '<div class="rr-bulk-modal" style="max-width:540px">' +
+                '<h2 style="margin:0 0 8px;font-size:18px;font-weight:600">Live HTML scan</h2>' +
+                '<p style="margin:0 0 18px;color:var(--rr-gray-600);font-size:13px">' +
+                  'Haalt de gerenderde HTML op van elke URL en leest de echte <code>&lt;title&gt;</code> en <code>&lt;meta description&gt;</code>. ' +
+                  'Resultaten matchen wat externe tools (zoals SE Ranking) zien.' +
+                '</p>' +
+                '<div class="rr-bulk-progress-wrap">' +
+                  '<div class="rr-bulk-progress-bar"><div class="rr-bulk-progress-fill" style="width:0%"></div></div>' +
+                  '<div class="rr-bulk-progress-text">' +
+                    '<span class="rr-html-scan-done">0</span> / <span class="rr-html-scan-total">' + total + '</span> ' +
+                    '<span style="color:var(--rr-gray-500)">·</span> ' +
+                    '<span class="rr-html-scan-failed-wrap" style="display:none;color:var(--rr-red-600)">' +
+                      '<span class="rr-html-scan-failed">0</span> mislukt' +
+                    '</span>' +
+                  '</div>' +
+                '</div>' +
+                '<div style="margin-top:18px;display:flex;justify-content:flex-end;gap:8px">' +
+                  '<button type="button" class="rr-btn rr-btn-secondary button" id="rr-html-scan-cancel">Annuleren</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>'
+        ).appendTo('body');
+
+        var cancelled = false;
+        $('#rr-html-scan-cancel').on('click', function() {
+            cancelled = true;
+            $(this).prop('disabled', true).text('Bezig met afsluiten...');
+        });
+
+        // Chunk-up
+        var chunks = [];
+        for (var i = 0; i < ids.length; i += chunkSize) {
+            chunks.push(ids.slice(i, i + chunkSize));
+        }
+
+        function updateProgress() {
+            var pct = Math.round((done / total) * 100);
+            $overlay.find('.rr-bulk-progress-fill').css('width', pct + '%');
+            $overlay.find('.rr-html-scan-done').text(done);
+            if (failed > 0) {
+                $overlay.find('.rr-html-scan-failed-wrap').show();
+                $overlay.find('.rr-html-scan-failed').text(failed);
+            }
+        }
+
+        function processChunk(chunk) {
+            if (cancelled) return $.Deferred().resolve().promise();
+
+            return $.post(rrAdmin.ajaxUrl, {
+                action: 'rr_html_scan_chunk',
+                nonce:  rrAdmin.nonce,
+                ids:    JSON.stringify(chunk),
+            }).done(function(resp) {
+                if (resp && resp.success && resp.data && resp.data.processed) {
+                    resp.data.processed.forEach(function(p) {
+                        done++;
+                        if (p.error) failed++;
+                    });
+                } else {
+                    done    += chunk.length;
+                    failed  += chunk.length;
+                }
+                updateProgress();
+            }).fail(function() {
+                done    += chunk.length;
+                failed  += chunk.length;
+                updateProgress();
+            });
+        }
+
+        // Run chunks met beperkte concurrency
+        var idx = 0;
+        function next() {
+            if (cancelled || idx >= chunks.length) return $.Deferred().resolve().promise();
+            var chunk = chunks[idx++];
+            return processChunk(chunk).then(next);
+        }
+
+        var lanes = [];
+        for (var c = 0; c < concurrent; c++) lanes.push(next());
+
+        $.when.apply($, lanes).always(function() {
+            if (cancelled) {
+                $overlay.find('.rr-bulk-progress-text').append(
+                    '<div style="margin-top:8px;color:var(--rr-orange-600);font-size:12px">Geannuleerd na ' + done + ' pagina\'s.</div>'
+                );
+            } else {
+                $overlay.find('.rr-bulk-progress-text').append(
+                    '<div style="margin-top:8px;color:var(--rr-green-600);font-weight:600">Klaar! Pagina laden...</div>'
+                );
+            }
+
+            // Knop wijzigen naar "sluiten + reload"
+            $('#rr-html-scan-cancel').prop('disabled', false).text('Vernieuwen').off('click').on('click', function() {
+                window.location.reload();
+            });
+
+            // Auto-reload na 1.5s als voltooid
+            if (!cancelled) {
+                setTimeout(function() { window.location.reload(); }, 1500);
+            }
         });
     }
 

@@ -1502,3 +1502,72 @@
 
 .rr-addon-row--off { opacity: 0.55; }
 .rr-addon-row--off .rr-addon-row-icon { filter: grayscale(0.6); }
+
+/* Reviews repeater */
+.rr-reviews-repeater { display: flex; flex-direction: column; gap: 12px; }
+.rr-reviews-list { display: flex; flex-direction: column; gap: 12px; }
+.rr-review-row {
+    background: var(--rr-gray-50, #f9fafb);
+    border: 1px solid var(--rr-gray-200, #e5e7eb);
+    border-radius: 8px;
+    padding: 14px 16px;
+    position: relative;
+}
+.rr-review-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.rr-review-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.rr-review-grid label > span {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--rr-gray-600, #4b5563);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.rr-review-grid input[type="text"],
+.rr-review-grid input[type="number"],
+.rr-review-grid input[type="date"],
+.rr-review-grid select,
+.rr-review-grid textarea {
+    width: 100%;
+    padding: 6px 10px;
+    font-size: 13px;
+    border: 1px solid var(--rr-gray-300, #d1d5db);
+    border-radius: 6px;
+    background: #fff;
+}
+.rr-review-full { grid-column: span 3; }
+.rr-review-remove {
+    color: var(--rr-danger, #ef4444) !important;
+    font-size: 12px !important;
+    margin-top: 4px;
+    text-decoration: none !important;
+}
+.rr-review-remove:hover { color: #b91c1c !important; text-decoration: underline !important; }
+.rr-reviews-add { align-self: flex-start; }
+
+@media (max-width: 900px) {
+    .rr-review-grid { grid-template-columns: 1fr 1fr; }
+    .rr-review-full { grid-column: span 2; }
+}
+
+.rr-json-textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+    font-size: 12px !important;
+    line-height: 1.45;
+    background: #0f172a;
+    color: #e2e8f0;
+    border-color: #1e293b;
+    border-radius: 8px;
+    padding: 12px 14px;
+    tab-size: 2;
+}
+.rr-json-textarea:focus { border-color: var(--rr-purple, #7c3aed); box-shadow: 0 0 0 2px rgba(124,58,237,0.25); }
+.rr-json-feedback { margin: 6px 0 0; font-size: 12px; font-weight: 600; }

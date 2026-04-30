@@ -3,7 +3,7 @@
  * Plugin Name: RankRepair
  * Plugin URI: https://example.com/rankrepair
  * Description: Los veelvoorkomende SEO- en performance-problemen op met één klik. Dashboard met PageSpeed integratie en modulaire add-ons.
- * Version: 1.3.0
+ * Version: 1.4.0
  * Author: Danique
  * Author URI: https://example.com
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('RR_VERSION', '1.3.0');
+define('RR_VERSION', '1.4.0');
 define('RR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('RR_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('RR_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -397,29 +397,25 @@ final class RankRepair {
     /**
      * Voeg paginatie-suffix toe aan de meta titel voor pagina 2+
      * Werkt met Yoast (wpseo_title) en vanilla WP (pre_get_document_title).
-     * Wordt alleen toegepast als de huidige post een opgeslagen RankRepair-titel heeft.
+     * Maakt elke /page/N/ titel uniek zodat SE Ranking ze niet als duplicaat ziet.
      */
     public function apply_pagination_suffix( $title ) {
         if ( is_admin() ) return $title;
+        if ( empty( $title ) ) return $title;
 
-        $paged = (int) get_query_var( 'paged' ) ?: (int) get_query_var( 'page' );
+        $paged = max( (int) get_query_var( 'paged' ), (int) get_query_var( 'page' ) );
         if ( $paged <= 1 ) return $title;
-
-        $post_id = get_queried_object_id();
-        if ( ! $post_id ) return $title;
-
-        global $wpdb;
-        $table = $wpdb->prefix . 'rr_meta_data';
-        $has   = $wpdb->get_var( $wpdb->prepare(
-            "SELECT id FROM $table WHERE post_id = %d AND status = 'applied' AND (new_title IS NOT NULL AND new_title != '')",
-            $post_id
-        ) );
-        if ( ! $has ) return $title;
 
         $sep   = get_option( 'rr_pagination_sep',   '-' );
         $label = get_option( 'rr_pagination_label', 'Pagina' );
 
-        return $title . ' ' . $sep . ' ' . $label . ' ' . $paged;
+        // Als Yoast %%page%% al heeft toegevoegd, niet dubbel doen
+        $suffix = $sep . ' ' . $label . ' ' . $paged;
+        if ( strpos( $title, $suffix ) !== false ) return $title;
+        // Ook voorkomen dat we toevoegen als 'Pagina N' al elders staat
+        if ( preg_match( '/' . preg_quote( $label, '/' ) . '\s+' . $paged . '\b/i', $title ) ) return $title;
+
+        return $title . ' ' . $suffix;
     }
 }
 

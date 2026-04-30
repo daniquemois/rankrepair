@@ -28,9 +28,19 @@ class RR_SD_Scanner {
         $types    = $this->get_page_types();
         $selected = $_GET['sd_type'] ?? 'home';
         if (!isset($types[$selected])) $selected = array_key_first($types);
-        $sample_url = $types[$selected]['url'] ?? home_url('/');
-        $schemas    = $this->scan_url($sample_url);
-        $totals     = $this->aggregate_totals($schemas);
+
+        // Save custom JSON-LD voor dit pagina-type
+        $saved_msg = '';
+        if (isset($_POST['rr_sd_save_custom']) && check_admin_referer('rr_sd_custom_' . $selected)) {
+            $raw = wp_unslash($_POST['rr_sd_custom_jsonld'] ?? '');
+            update_option('rr_sd_custom_jsonld_' . $selected, $raw);
+            $saved_msg = __('Opgeslagen. Ververs sample pagina en de inspector om veranderingen te zien (wis eventueel caches).', 'rankrepair');
+        }
+
+        $custom_value = get_option('rr_sd_custom_jsonld_' . $selected, '');
+        $sample_url   = $types[$selected]['url'] ?? home_url('/');
+        $schemas      = $this->scan_url($sample_url);
+        $totals       = $this->aggregate_totals($schemas);
         ?>
         <div class="wrap rr-wrap">
             <div class="rr-header">
@@ -75,6 +85,12 @@ class RR_SD_Scanner {
                         </div>
                     </div>
 
+                    <?php if ($saved_msg): ?>
+                    <div class="notice notice-success" style="margin:0 0 16px;padding:10px 14px"><p><?php echo esc_html($saved_msg); ?></p></div>
+                    <?php endif; ?>
+
+                    <?php $this->render_custom_jsonld_box($selected, $custom_value, $types[$selected]['label'] ?? $selected); ?>
+
                     <?php if (!empty($suggested)): ?>
                     <div class="rr-sd-suggest">
                         <h3><?php _e('Wat RankRepair kan aanvullen', 'rankrepair'); ?></h3>
@@ -108,9 +124,10 @@ class RR_SD_Scanner {
      * Render één schema als accordion-blok met volledige property-tabel.
      */
     private function render_schema_block(array $schema): void {
-        $type  = $this->get_type_label($schema['data']['@type'] ?? '(Unknown)');
-        $id    = $schema['data']['@id'] ?? '';
-        $valid = $this->validate_schema($schema['data']);
+        $type    = $this->get_type_label($schema['data']['@type'] ?? '(Unknown)');
+        $id      = $schema['data']['@id'] ?? '';
+        $valid   = $this->validate_schema($schema['data']);
+        $actions = $this->get_edit_actions($schema);
         ?>
         <details class="rr-sd-schema">
             <summary class="rr-sd-schema-head">
@@ -125,6 +142,17 @@ class RR_SD_Scanner {
                 <?php endif; ?>
             </summary>
             <div class="rr-sd-schema-body">
+                <?php if (!empty($actions)): ?>
+                <div class="rr-sd-actions">
+                    <?php foreach ($actions as $a): ?>
+                    <a href="<?php echo esc_url($a['url']); ?>" class="rr-sd-action-btn" <?php echo !empty($a['new_tab']) ? 'target="_blank"' : ''; ?>>
+                        <span class="rr-sd-action-icon">✎</span>
+                        <?php echo esc_html($a['label']); ?>
+                    </a>
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
+
                 <?php if ($id): ?>
                 <p class="rr-sd-schema-id">ID: <?php echo esc_html($id); ?></p>
                 <?php endif; ?>
@@ -148,6 +176,203 @@ class RR_SD_Scanner {
             </div>
         </details>
         <?php
+    }
+
+    /**
+     * Render het "Eigen JSON-LD" paste-veld voor dit pagina-type.
+     */
+    private function render_custom_jsonld_box(string $selected, string $value, string $human_label = ''): void {
+        if (empty($human_label)) $human_label = $selected;
+        // Validatie
+        $valid = true; $count = 0;
+        if (trim($value) !== '') {
+            $test = trim($value);
+            if (preg_match('#<script[^>]*>(.*?)</script>#is', $test, $m)) $test = trim($m[1]);
+            $decoded = json_decode($test, true);
+            $valid = is_array($decoded);
+            if ($valid) {
+                if (isset($decoded['@graph']) && is_array($decoded['@graph']))     $count = count($decoded['@graph']);
+                elseif (isset($decoded['@type']))                                  $count = 1;
+                elseif (array_keys($decoded) === range(0, count($decoded) - 1))    $count = count($decoded);
+            }
+        }
+        ?>
+        <details class="rr-sd-custom" <?php echo trim($value) !== '' ? 'open' : ''; ?>>
+            <summary class="rr-sd-custom-head">
+                <span class="rr-sd-custom-chev">›</span>
+                <strong><?php _e('Eigen JSON-LD voor dit pagina-type', 'rankrepair'); ?></strong>
+                <?php if (trim($value) === ''): ?>
+                    <span class="rr-sd-custom-state"><?php _e('Leeg', 'rankrepair'); ?></span>
+                <?php elseif ($valid): ?>
+                    <span class="rr-sd-custom-state rr-sd-custom-state--ok">✓ <?php echo esc_html(sprintf(__('%d schema%s ingevoerd', 'rankrepair'), $count, $count === 1 ? '' : '\'s')); ?></span>
+                <?php else: ?>
+                    <span class="rr-sd-custom-state rr-sd-custom-state--err">✗ <?php _e('Ongeldige JSON', 'rankrepair'); ?></span>
+                <?php endif; ?>
+            </summary>
+            <form method="post" class="rr-sd-custom-form">
+                <?php wp_nonce_field('rr_sd_custom_' . $selected); ?>
+                <p class="rr-sd-custom-hint">
+                    <?php _e('Plak hier JSON-LD die alleen op dit pagina-type (', 'rankrepair'); ?><strong><?php echo esc_html($human_label); ?></strong><?php _e(') moet verschijnen. Gebruik <code>{{placeholders}}</code> zodat 1 template voor álle pagina\'s van dit niveau werkt.', 'rankrepair'); ?>
+                </p>
+
+                <?php if (class_exists('RR_SD_Template')):
+                    $example = RR_SD_Template::get_example_template($selected);
+                    $placeholders = RR_SD_Template::available_placeholders();
+                ?>
+                <details class="rr-sd-placeholders">
+                    <summary><strong><?php _e('Beschikbare placeholders', 'rankrepair'); ?></strong> <span class="rr-sd-ph-count"><?php echo count($placeholders); ?></span></summary>
+                    <div class="rr-sd-placeholders-grid">
+                        <?php foreach ($placeholders as $key => $desc): ?>
+                            <div class="rr-sd-ph-row">
+                                <code class="rr-sd-ph-key">{{<?php echo esc_html($key); ?>}}</code>
+                                <span class="rr-sd-ph-desc"><?php echo esc_html($desc); ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </details>
+                <?php endif; ?>
+
+                <textarea name="rr_sd_custom_jsonld" class="rr-json-textarea" rows="16" spellcheck="false" placeholder='{"@context":"https://schema.org","@graph":[…]}'><?php echo esc_textarea($value); ?></textarea>
+                <div class="rr-sd-custom-actions">
+                    <?php if (class_exists('RR_SD_Template') && !empty($example)): ?>
+                    <button type="button" class="button rr-sd-load-example" data-example="<?php echo esc_attr($example); ?>">
+                        <?php _e('Voorbeeld-template invoegen', 'rankrepair'); ?>
+                    </button>
+                    <?php endif; ?>
+                    <button type="submit" name="rr_sd_save_custom" class="button button-primary"><?php _e('JSON-LD opslaan', 'rankrepair'); ?></button>
+                </div>
+            </form>
+            <script>
+            (function(){
+                document.querySelectorAll('.rr-sd-load-example').forEach(function(btn){
+                    btn.addEventListener('click', function(){
+                        var ta = btn.closest('form').querySelector('textarea[name="rr_sd_custom_jsonld"]');
+                        if (!ta) return;
+                        if (ta.value.trim() !== '' && !confirm('Huidige inhoud overschrijven met voorbeeld-template?')) return;
+                        ta.value = btn.getAttribute('data-example');
+                        ta.focus();
+                    });
+                });
+            })();
+            </script>
+        </details>
+        <?php
+    }
+
+    /**
+     * Bepaal bewerk-acties per schema op basis van source + type.
+     * Stuurt gebruiker naar de juiste plek (RR instellingen / Yoast / WooCommerce product edit).
+     */
+    private function get_edit_actions(array $schema): array {
+        $data   = $schema['data'] ?? [];
+        $type   = $this->get_type_label($data['@type'] ?? '');
+        $source = $schema['source'] ?? '';
+        $id     = $data['@id'] ?? '';
+        $url    = $data['url'] ?? '';
+        $actions = [];
+
+        // Organization/LocalBusiness bewerken (alleen onze eigen schema; Yoast heeft eigen setting)
+        if (in_array($type, ['Organization', 'LocalBusiness'], true)) {
+            if ($source === 'RankRepair') {
+                $actions[] = [
+                    'label' => __('Bewerk in RankRepair instellingen', 'rankrepair'),
+                    'url'   => admin_url('admin.php?page=rankrepair-settings#rr-sd-open'),
+                ];
+            } elseif ($source === 'Yoast SEO') {
+                $actions[] = [
+                    'label' => __('Bewerk in Yoast (Algemeen → Site-representatie)', 'rankrepair'),
+                    'url'   => admin_url('admin.php?page=wpseo_page_settings#/site-representation'),
+                ];
+            }
+        }
+
+        // BreadcrumbList → Yoast algemene breadcrumb-instellingen of per post
+        if ($type === 'BreadcrumbList' && $source === 'Yoast SEO') {
+            $actions[] = [
+                'label' => __('Breadcrumb instellingen (Yoast)', 'rankrepair'),
+                'url'   => admin_url('admin.php?page=wpseo_page_settings#/breadcrumbs'),
+            ];
+        }
+
+        // Product → WooCommerce product edit page
+        if ($type === 'Product') {
+            $post_id = url_to_postid($url);
+            if ($post_id) {
+                $actions[] = [
+                    'label' => __('Bewerk product', 'rankrepair'),
+                    'url'   => get_edit_post_link($post_id, 'edit'),
+                ];
+            }
+        }
+
+        // ProductGroup → term edit
+        if (in_array($type, ['ProductGroup', 'CollectionPage'], true) && $url) {
+            // Probeer taxonomy term te vinden
+            $term = $this->url_to_term($url);
+            if ($term) {
+                $actions[] = [
+                    'label' => __('Bewerk categorie', 'rankrepair'),
+                    'url'   => get_edit_term_link($term->term_id, $term->taxonomy),
+                ];
+            }
+        }
+
+        // WebPage / Article / PostalAddress / generiek: link naar post/page edit
+        if (empty($actions) && in_array($type, ['WebPage', 'Article', 'ItemPage', 'Blog', 'Product'], true) && $url) {
+            $post_id = url_to_postid($url);
+            if ($post_id) {
+                $actions[] = [
+                    'label' => __('Bewerk pagina', 'rankrepair'),
+                    'url'   => get_edit_post_link($post_id, 'edit'),
+                ];
+            }
+        }
+
+        // FAQPage → naar post edit (blocks) of ACF
+        if ($type === 'FAQPage' && $url) {
+            $post_id = url_to_postid($url);
+            if ($post_id) {
+                $actions[] = [
+                    'label' => __('Bewerk FAQ content', 'rankrepair'),
+                    'url'   => get_edit_post_link($post_id, 'edit'),
+                ];
+            }
+        }
+
+        // Source-specifieke fallbacks
+        if (empty($actions) && $source === 'RankRepair') {
+            $actions[] = [
+                'label' => __('Bewerk in RankRepair instellingen', 'rankrepair'),
+                'url'   => admin_url('admin.php?page=rankrepair-settings#rr-sd-open'),
+            ];
+        }
+        if (empty($actions) && $source === 'Yoast SEO' && $url) {
+            $post_id = url_to_postid($url);
+            if ($post_id) {
+                $actions[] = [
+                    'label' => __('Bewerk in Yoast (via pagina)', 'rankrepair'),
+                    'url'   => get_edit_post_link($post_id, 'edit'),
+                ];
+            }
+        }
+
+        return $actions;
+    }
+
+    private function url_to_term(string $url): ?object {
+        $path = wp_parse_url($url, PHP_URL_PATH);
+        if (!$path) return null;
+        foreach (['product_cat', 'category', 'product_tag', 'post_tag'] as $tax) {
+            $terms = get_terms(['taxonomy' => $tax, 'hide_empty' => false]);
+            if (is_wp_error($terms)) continue;
+            foreach ($terms as $t) {
+                $term_link = get_term_link($t);
+                if (!is_wp_error($term_link) && rtrim(wp_parse_url($term_link, PHP_URL_PATH), '/') === rtrim($path, '/')) {
+                    return $t;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -274,13 +499,31 @@ class RR_SD_Scanner {
                     'count' => (int) wp_count_posts('product')->publish,
                 ];
             }
-            $prod_cats = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => false, 'number' => 1]);
-            if (!is_wp_error($prod_cats) && !empty($prod_cats)) {
-                $types['product_cat'] = [
-                    'label' => __('Productcategorie', 'rankrepair'),
-                    'url'   => get_term_link($prod_cats[0]),
-                    'count' => count(get_terms(['taxonomy' => 'product_cat', 'hide_empty' => false, 'fields' => 'ids'])),
+            // Productcategorieën — gesplitst per diepte (L1/L2/L3)
+            $all_cats = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => false]);
+            if (!is_wp_error($all_cats) && !empty($all_cats)) {
+                $by_depth = ['l1' => [], 'l2' => [], 'l3' => []];
+                foreach ($all_cats as $cat) {
+                    $d = class_exists('RR_Addon_Structured_Data')
+                        ? RR_Addon_Structured_Data::term_depth($cat)
+                        : 1;
+                    $key = $d >= 3 ? 'l3' : ($d === 2 ? 'l2' : 'l1');
+                    $by_depth[$key][] = $cat;
+                }
+                $level_labels = [
+                    'l1' => __('Productcat. (L1 hoofdniveau)', 'rankrepair'),
+                    'l2' => __('Productcat. (L2 sub)', 'rankrepair'),
+                    'l3' => __('Productcat. (L3 sub-sub)', 'rankrepair'),
                 ];
+                foreach (['l1', 'l2', 'l3'] as $lvl) {
+                    if (!empty($by_depth[$lvl])) {
+                        $types['product_cat_' . $lvl] = [
+                            'label' => $level_labels[$lvl],
+                            'url'   => get_term_link($by_depth[$lvl][0]),
+                            'count' => count($by_depth[$lvl]),
+                        ];
+                    }
+                }
             }
         }
 

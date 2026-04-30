@@ -26,11 +26,12 @@ class RR_Addon_Redirects_Checker extends RR_Addon_Base {
     public function enqueue_assets( $hook ): void {
         if ( strpos( $hook, 'rankrepair-redirects-checker' ) === false ) return;
 
+        $css_ver = filemtime( RR_PLUGIN_DIR . 'addons/redirects-checker/redirects-checker.css' ) ?: RR_VERSION;
         wp_enqueue_style(
             'rr-redirects-checker',
             RR_PLUGIN_URL . 'addons/redirects-checker/redirects-checker.css',
             [ 'rr-admin-style' ],
-            RR_VERSION
+            $css_ver
         );
         wp_enqueue_script(
             'rr-redirects-checker',
@@ -82,10 +83,10 @@ class RR_Addon_Redirects_Checker extends RR_Addon_Base {
             <!-- ===== HEADER ===== -->
             <div class="rr-rc-header">
                 <div class="rr-rc-header-left">
-                    <div class="rr-rc-logo">RR</div>
+                    <img src="<?php echo esc_url( RR_PLUGIN_URL . 'assets/images/logoRankrepair.svg' ); ?>" alt="RankRepair" class="rr-rc-logo-img">
+                <div class="rr-rc-header-divider"></div>
                     <div>
                         <div class="rr-rc-title-row">
-                            <span class="rr-rc-title">Rank<span>Repair</span></span>
                             <span class="rr-rc-badge-green">Redirect Checker</span>
                         </div>
                         <p class="rr-rc-subtitle">Valideer redirects vóór ze live gaan → stuur door naar Redirection plugin</p>

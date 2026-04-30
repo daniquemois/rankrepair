@@ -10,6 +10,12 @@ if (!defined('ABSPATH')) {
 
 class RR_Addon_Meta_Manager extends RR_Addon_Base {
 
+    // SEO drempels (matchen SE Ranking + Yoast best practice)
+    const TITLE_MIN = 30;
+    const TITLE_MAX = 60;
+    const DESC_MIN  = 70;
+    const DESC_MAX  = 158;
+
     protected function init() {
         $this->slug        = 'meta-manager';
         $this->name        = __('AI Meta Rewriter', 'rankrepair');
@@ -251,21 +257,21 @@ document.addEventListener('DOMContentLoaded', function() {
         $missing_h1       = count(array_filter($all_items, fn($i) => empty(json_decode($i['current_h1'] ?? '[]', true) ?: [])));
         $duplicate_h1     = count(array_filter($all_items, fn($i) => count(json_decode($i['current_h1'] ?? '[]', true) ?: []) > 1));
         $missing_title    = count(array_filter($all_items, fn($i) => empty($i['current_title'])));
-        $title_too_short  = count(array_filter($all_items, fn($i) => $i['title_length'] > 0 && $i['title_length'] < 30));
-        $title_too_long   = count(array_filter($all_items, fn($i) => $i['title_length'] > 60));
+        $title_too_short  = count(array_filter($all_items, fn($i) => $i['title_length'] > 0 && $i['title_length'] < self::TITLE_MIN));
+        $title_too_long   = count(array_filter($all_items, fn($i) => $i['title_length'] > self::TITLE_MAX));
         $duplicate_title  = count(array_filter($all_items, fn($i) => $i['is_duplicate_title']));
         $missing_desc     = count(array_filter($all_items, fn($i) => empty($i['current_description'])));
-        $desc_too_short   = count(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70));
-        $desc_too_long    = count(array_filter($all_items, fn($i) => $i['description_length'] > 160));
+        $desc_too_short   = count(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < self::DESC_MIN));
+        $desc_too_long    = count(array_filter($all_items, fn($i) => $i['description_length'] > self::DESC_MAX));
         $duplicate_desc   = count(array_filter($all_items, fn($i) => $i['is_duplicate_description']));
         $ai_ready         = count(array_filter($all_items, fn($i) => !empty($i['new_title']) && $i['status'] !== 'applied'));
         $applied          = count(array_filter($all_items, fn($i) => $i['status'] === 'applied'));
         $issues           = count(array_filter($all_items, fn($i) =>
             empty($i['current_title']) || empty($i['current_description'])
             || $i['is_duplicate_title'] || $i['is_duplicate_description']
-            || ($i['title_length'] > 0 && $i['title_length'] < 30)
-            || ($i['description_length'] > 0 && $i['description_length'] < 70)
-            || $i['title_length'] > 60 || $i['description_length'] > 160
+            || ($i['title_length'] > 0 && $i['title_length'] < self::TITLE_MIN)
+            || ($i['description_length'] > 0 && $i['description_length'] < self::DESC_MIN)
+            || $i['title_length'] > self::TITLE_MAX || $i['description_length'] > self::DESC_MAX
         ));
 
         return [
@@ -293,8 +299,17 @@ document.addEventListener('DOMContentLoaded', function() {
         global $wpdb;
         $table = $wpdb->prefix . 'rr_meta_data';
 
-        // 1. Live Yoast meta uit postmeta
-        $post_types = apply_filters('rr_scan_post_types', ['post', 'page', 'product']);
+        // 1. Live Yoast meta uit postmeta — alle publieke post-types inclusief CPTs
+        $auto_post_types = get_post_types([
+            'public'             => true,
+            'publicly_queryable' => true,
+        ], 'names');
+        // Sluit attachment uit (media library, geen SEO-doel)
+        unset($auto_post_types['attachment']);
+        // Voeg 'page' altijd toe (publicly_queryable=false bij sommige themes)
+        if (post_type_exists('page')) $auto_post_types['page'] = 'page';
+
+        $post_types = apply_filters('rr_scan_post_types', array_values($auto_post_types));
         $post_types = array_filter(array_map('sanitize_key', $post_types));
         if (empty($post_types)) {
             $post_types = ['post', 'page', 'product'];
@@ -336,6 +351,10 @@ document.addEventListener('DOMContentLoaded', function() {
             ? new WPSEO_Replace_Vars()
             : null;
         $wpseo_titles = get_option('wpseo_titles', []);
+
+        // 3b. Live HTML scan resultaten (als beschikbaar) — overschrijven Yoast values
+        $html_scan = get_option('rr_html_scan_results', []);
+        if (!is_array($html_scan)) $html_scan = [];
 
         $all_items    = [];
         $title_counts = [];
@@ -392,8 +411,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
             $stored = $rr_stored['post:' . $raw->ID] ?? [];
 
+            // Override met live HTML scan indien beschikbaar
+            $entity_id = 'post:' . $raw->ID;
+            $html_scanned = false;
+            if (isset($html_scan[$entity_id])) {
+                $h = $html_scan[$entity_id];
+                if (!empty($h['html_title'])) $title = $h['html_title'];
+                if (!empty($h['html_desc']))  $desc  = $h['html_desc'];
+                $html_scanned = true;
+            }
+
             $item = [
-                'id'                       => 'post:' . $raw->ID,
+                'id'                       => $entity_id,
                 'post_id'                  => $raw->ID,
                 'entity_type'              => 'post',
                 'entity_subtype'           => $raw->post_type,
@@ -401,6 +430,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 'current_h1'               => $h1,
                 'current_title'            => $title,
                 'current_description'      => $desc,
+                'html_scanned'             => $html_scanned,
                 'new_title'                => $stored['new_title']       ?? '',
                 'new_description'          => $stored['new_description'] ?? '',
                 'status'                   => $stored['status']          ?? 'pending',
@@ -416,8 +446,15 @@ document.addEventListener('DOMContentLoaded', function() {
             $all_items[] = $item;
         }
 
-        // 4. Termen (taxonomies) — categoriepagina's, tag-pagina's
-        $taxonomies = apply_filters('rr_scan_taxonomies', ['category', 'post_tag', 'product_cat', 'product_tag']);
+        // 4. Termen (taxonomies) — alle publieke taxonomieën inclusief custom (bv. /merk/, /brand/)
+        $auto_taxonomies = get_taxonomies([
+            'public'             => true,
+            'publicly_queryable' => true,
+        ], 'names');
+        // Sluit interne / niet-relevante taxonomieën uit
+        $skip = ['post_format', 'product_shipping_class', 'nav_menu', 'link_category'];
+        $auto_taxonomies = array_diff($auto_taxonomies, $skip);
+        $taxonomies = apply_filters('rr_scan_taxonomies', array_values($auto_taxonomies));
         $taxonomies = array_filter(array_map('sanitize_key', $taxonomies), fn($t) => taxonomy_exists($t));
 
         foreach ($taxonomies as $taxonomy) {
@@ -474,8 +511,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 $stored = $rr_stored['term:' . $term->term_id] ?? [];
 
+                // Override met live HTML scan indien beschikbaar
+                $entity_id = 'term:' . $term->term_id;
+                $html_scanned = false;
+                if (isset($html_scan[$entity_id])) {
+                    $h = $html_scan[$entity_id];
+                    if (!empty($h['html_title'])) $title = $h['html_title'];
+                    if (!empty($h['html_desc']))  $desc  = $h['html_desc'];
+                    $html_scanned = true;
+                }
+
                 $item = [
-                    'id'                       => 'term:' . $term->term_id,
+                    'id'                       => $entity_id,
                     'post_id'                  => $term->term_id,
                     'entity_type'              => 'term',
                     'entity_subtype'           => $taxonomy,
@@ -483,6 +530,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'current_h1'               => json_encode([$term->name], JSON_UNESCAPED_UNICODE),
                     'current_title'            => $title,
                     'current_description'      => $desc,
+                    'html_scanned'             => $html_scanned,
                     'new_title'                => $stored['new_title']       ?? '',
                     'new_description'          => $stored['new_description'] ?? '',
                     'status'                   => $stored['status']          ?? 'pending',
@@ -529,22 +577,22 @@ document.addEventListener('DOMContentLoaded', function() {
         $items       = $all_items;
         $h1_count    = fn($i) => count(json_decode($i['current_h1'] ?? '[]', true) ?: []);
         $filter_map = [
-            'issues'           => fn($i) => empty($i['current_title']) || empty($i['current_description']) || $i['is_duplicate_title'] || $i['is_duplicate_description'] || ($i['title_length'] > 0 && $i['title_length'] < 30) || ($i['description_length'] > 0 && $i['description_length'] < 70) || $i['title_length'] > 60 || $i['description_length'] > 160,
+            'issues'           => fn($i) => empty($i['current_title']) || empty($i['current_description']) || $i['is_duplicate_title'] || $i['is_duplicate_description'] || ($i['title_length'] > 0 && $i['title_length'] < self::TITLE_MIN) || ($i['description_length'] > 0 && $i['description_length'] < self::DESC_MIN) || $i['title_length'] > self::TITLE_MAX || $i['description_length'] > self::DESC_MAX,
             'ai_ready'         => fn($i) => !empty($i['new_title']) && $i['status'] !== 'applied',
             'ok'               => fn($i) => $i['status'] === 'applied',
             'missing_h1'       => fn($i) => $h1_count($i) === 0,
             'duplicate_h1'     => fn($i) => $h1_count($i) > 1,
             'h1_ok'            => fn($i) => $h1_count($i) === 1,
             'missing_title'    => fn($i) => empty($i['current_title']),
-            'title_too_short'  => fn($i) => $i['title_length'] > 0 && $i['title_length'] < 30,
-            'title_too_long'   => fn($i) => $i['title_length'] > 60,
+            'title_too_short'  => fn($i) => $i['title_length'] > 0 && $i['title_length'] < self::TITLE_MIN,
+            'title_too_long'   => fn($i) => $i['title_length'] > self::TITLE_MAX,
             'duplicate_title'  => fn($i) => (bool) $i['is_duplicate_title'],
-            'title_ok'         => fn($i) => !empty($i['current_title']) && $i['title_length'] >= 30 && $i['title_length'] <= 60 && !$i['is_duplicate_title'],
+            'title_ok'         => fn($i) => !empty($i['current_title']) && $i['title_length'] >= self::TITLE_MIN && $i['title_length'] <= self::TITLE_MAX && !$i['is_duplicate_title'],
             'missing_desc'     => fn($i) => empty($i['current_description']),
-            'desc_too_short'   => fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70,
-            'desc_too_long'    => fn($i) => $i['description_length'] > 160,
+            'desc_too_short'   => fn($i) => $i['description_length'] > 0 && $i['description_length'] < self::DESC_MIN,
+            'desc_too_long'    => fn($i) => $i['description_length'] > self::DESC_MAX,
             'duplicate_desc'   => fn($i) => (bool) $i['is_duplicate_description'],
-            'desc_ok'          => fn($i) => !empty($i['current_description']) && $i['description_length'] >= 70 && $i['description_length'] <= 160 && !$i['is_duplicate_description'],
+            'desc_ok'          => fn($i) => !empty($i['current_description']) && $i['description_length'] >= self::DESC_MIN && $i['description_length'] <= self::DESC_MAX && !$i['is_duplicate_description'],
         ];
         if (isset($filter_map[$filter])) {
             $items = array_values(array_filter($items, $filter_map[$filter]));
@@ -587,10 +635,10 @@ document.addEventListener('DOMContentLoaded', function() {
         $ids_missing_desc  = array_values(array_column(array_filter($all_items, fn($i) => empty($i['current_description'])),                                  'id'));
         $ids_dup_title     = array_values(array_column(array_filter($all_items, fn($i) => (bool)$i['is_duplicate_title']),                                    'id'));
         $ids_dup_desc      = array_values(array_column(array_filter($all_items, fn($i) => (bool)$i['is_duplicate_description']),                              'id'));
-        $ids_long_title    = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > 60),                                     'id'));
-        $ids_long_desc     = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > 160),                                    'id'));
-        $ids_short_title   = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > 0 && $i['title_length']       < 30),     'id'));
-        $ids_short_desc    = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < 70),     'id'));
+        $ids_long_title    = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > self::TITLE_MAX),                       'id'));
+        $ids_long_desc     = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > self::DESC_MAX),                        'id'));
+        $ids_short_title   = array_values(array_column(array_filter($all_items, fn($i) => $i['title_length']       > 0 && $i['title_length']       < self::TITLE_MIN), 'id'));
+        $ids_short_desc    = array_values(array_column(array_filter($all_items, fn($i) => $i['description_length'] > 0 && $i['description_length'] < self::DESC_MIN),  'id'));
         $all_issue_ids     = array_values(array_unique(array_merge($ids_missing_title, $ids_missing_desc, $ids_dup_title, $ids_dup_desc, $ids_long_title, $ids_long_desc, $ids_short_title, $ids_short_desc)));
 
         wp_add_inline_script('rr-meta-manager',
@@ -644,6 +692,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
                         <?php _e('Ververs', 'rankrepair'); ?>
                     </a>
+                    <button type="button" id="rr-html-scan-btn" class="rr-btn rr-btn-secondary button" title="<?php esc_attr_e('Haal de gerenderde HTML van elke URL op (komt overeen met SE Ranking)', 'rankrepair'); ?>">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                        <?php _e('Live HTML scan', 'rankrepair'); ?>
+                    </button>
                     <button type="button" id="rr-csv-upload-btn" class="rr-btn rr-btn-secondary button">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                         <?php _e('CSV uploaden', 'rankrepair'); ?>

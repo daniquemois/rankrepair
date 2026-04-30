@@ -218,6 +218,44 @@
         $('.rr-notice-success').not('.rr-notice-persistent').fadeOut(500);
     }, 5000);
 
+    // Reviews repeater (Structured Data settings)
+    function rrSyncReviews($repeater) {
+        var reviews = [];
+        $repeater.find('.rr-review-row').each(function() {
+            var $row = $(this);
+            var r = {};
+            $row.find('[data-field]').each(function() {
+                r[$(this).data('field')] = $(this).val();
+            });
+            reviews.push(r);
+        });
+        $repeater.find('.rr-reviews-json').val(JSON.stringify(reviews));
+    }
+
+    $(document).on('click', '.rr-reviews-add', function() {
+        var $repeater = $(this).closest('.rr-reviews-repeater');
+        var tmpl = $repeater.find('.rr-review-template').html();
+        var $list = $repeater.find('.rr-reviews-list');
+        var idx = $list.find('.rr-review-row').length;
+        var html = tmpl.replace(/__INDEX__/g, idx);
+        $list.append(html);
+        rrSyncReviews($repeater);
+    });
+
+    $(document).on('click', '.rr-review-remove', function() {
+        var $repeater = $(this).closest('.rr-reviews-repeater');
+        $(this).closest('.rr-review-row').remove();
+        rrSyncReviews($repeater);
+    });
+
+    $(document).on('input change', '.rr-review-row [data-field]', function() {
+        var $repeater = $(this).closest('.rr-reviews-repeater');
+        rrSyncReviews($repeater);
+    });
+
+    // Zorg dat bij pageload de hidden input al synced is (inclusief database-waarden)
+    $('.rr-reviews-repeater').each(function() { rrSyncReviews($(this)); });
+
     // Add-on aan/uit toggle (Dashboard)
     $(document).on('change', '.rr-addon-toggle', function() {
         var $toggle  = $(this);

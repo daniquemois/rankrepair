@@ -38,6 +38,120 @@ class RR_Ajax_Handler {
 
         // Addon aan/uit
         add_action('wp_ajax_rr_toggle_addon', [$this, 'toggle_addon']);
+
+        // Live HTML scan (haalt gerenderde <title> + <meta description> op)
+        add_action('wp_ajax_rr_html_scan_chunk', [$this, 'html_scan_chunk']);
+        add_action('wp_ajax_rr_html_scan_clear', [$this, 'html_scan_clear']);
+    }
+
+    /**
+     * Live HTML scan — haalt gerenderde HTML op voor een chunk URLs en parsed
+     * <title> + <meta name="description">. Resultaten worden opgeslagen in
+     * de option 'rr_html_scan_results' zodat compute_stats ze kan gebruiken.
+     */
+    public function html_scan_chunk() {
+        $this->verify_nonce();
+
+        $ids = isset($_POST['ids']) ? json_decode(wp_unslash($_POST['ids']), true) : [];
+        if (!is_array($ids) || empty($ids)) {
+            wp_send_json_error(['message' => __('Geen IDs ontvangen.', 'rankrepair')]);
+        }
+
+        $results = get_option('rr_html_scan_results', []);
+        if (!is_array($results)) $results = [];
+
+        $processed = [];
+        foreach ($ids as $id) {
+            $id = sanitize_text_field($id);
+            if (empty($id) || strpos($id, ':') === false) continue;
+
+            list($type, $entity_id) = explode(':', $id, 2);
+            $entity_id = (int) $entity_id;
+            $url = '';
+
+            if ($type === 'post' && $entity_id) {
+                $url = get_permalink($entity_id);
+            } elseif ($type === 'term' && $entity_id) {
+                $term_link = get_term_link($entity_id);
+                if (!is_wp_error($term_link)) $url = $term_link;
+            }
+
+            if (empty($url)) {
+                $processed[] = ['id' => $id, 'error' => 'URL niet gevonden'];
+                continue;
+            }
+
+            $resp = wp_remote_get($url, [
+                'timeout'     => 15,
+                'redirection' => 5,
+                'sslverify'   => false,
+                'user-agent'  => 'RankRepair/1.0 (+SEO scan)',
+                'headers'     => ['Accept' => 'text/html,application/xhtml+xml'],
+            ]);
+
+            if (is_wp_error($resp)) {
+                $processed[] = [
+                    'id'    => $id,
+                    'error' => $resp->get_error_message(),
+                ];
+                continue;
+            }
+
+            $code = wp_remote_retrieve_response_code($resp);
+            $body = wp_remote_retrieve_body($resp);
+
+            if ($code !== 200 || empty($body)) {
+                $processed[] = [
+                    'id'    => $id,
+                    'error' => 'HTTP ' . $code,
+                ];
+                continue;
+            }
+
+            $title = '';
+            $desc  = '';
+
+            // <title> tag — pak alleen die in <head> (eerste match)
+            if (preg_match('#<title[^>]*>(.*?)</title>#is', $body, $m)) {
+                $title = trim(html_entity_decode(wp_strip_all_tags($m[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            }
+
+            // <meta name="description"> — accepteer ook property="og:description" als fallback
+            if (preg_match('#<meta[^>]+name=["\']description["\'][^>]*content=["\']([^"\']*)["\']#is', $body, $m)) {
+                $desc = trim(html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            } elseif (preg_match('#<meta[^>]+content=["\']([^"\']*)["\'][^>]*name=["\']description["\']#is', $body, $m)) {
+                // content komt voor name in attribuut-volgorde
+                $desc = trim(html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            }
+
+            $results[$id] = [
+                'html_title' => $title,
+                'html_desc'  => $desc,
+                'scanned_at' => time(),
+                'url'        => $url,
+            ];
+
+            $processed[] = [
+                'id'         => $id,
+                'html_title' => $title,
+                'html_desc'  => $desc,
+                'title_len'  => mb_strlen($title),
+                'desc_len'   => mb_strlen($desc),
+            ];
+        }
+
+        update_option('rr_html_scan_results', $results, false);
+
+        wp_send_json_success([
+            'processed' => $processed,
+            'count'     => count($processed),
+        ]);
+    }
+
+    public function html_scan_clear() {
+        $this->verify_nonce();
+        delete_option('rr_html_scan_results');
+        wp_send_json_success(['message' => __('Live HTML scan resultaten gewist.', 'rankrepair')]);
     }
 
     public function toggle_addon() {
@@ -89,6 +203,15 @@ class RR_Ajax_Handler {
      * Werkt voor posts én termen.
      */
     private function write_entity_meta(string $type, int $id, ?string $title, ?string $desc): void {
+        // Invalideer Live HTML scan cache zodat het dashboard direct de nieuwe
+        // waardes ziet (anders blijft de gescande oude titel/desc geladen).
+        $entity_id_str = $type . ':' . $id;
+        $html_scan = get_option('rr_html_scan_results', []);
+        if (is_array($html_scan) && isset($html_scan[$entity_id_str])) {
+            unset($html_scan[$entity_id_str]);
+            update_option('rr_html_scan_results', $html_scan, false);
+        }
+
         if ($type === 'post') {
             if ($title !== null) {
                 if (defined('WPSEO_VERSION'))     update_post_meta($id, '_yoast_wpseo_title',   $title);
@@ -106,6 +229,29 @@ class RR_Ajax_Handler {
             if ($desc !== null) {
                 if (defined('WPSEO_VERSION'))     update_term_meta($id, '_yoast_wpseo_metadesc', $desc);
                 if (defined('RANK_MATH_VERSION')) update_term_meta($id, 'rank_math_description', $desc);
+            }
+
+            // Yoast leest voor sommige taxonomieën (bv. 'category') primair uit
+            // de legacy 'wpseo_taxonomy_meta' optie. Schrijf óók daar zodat de
+            // wijzigingen consistent zichtbaar zijn op het frontend.
+            if (defined('WPSEO_VERSION')) {
+                $term = get_term($id);
+                if ($term && !is_wp_error($term)) {
+                    $tax_meta = get_option('wpseo_taxonomy_meta', []);
+                    if (!is_array($tax_meta)) $tax_meta = [];
+                    if (!isset($tax_meta[$term->taxonomy])) $tax_meta[$term->taxonomy] = [];
+                    if (!isset($tax_meta[$term->taxonomy][$id])) $tax_meta[$term->taxonomy][$id] = [];
+                    if ($title !== null) $tax_meta[$term->taxonomy][$id]['wpseo_title'] = $title;
+                    if ($desc  !== null) $tax_meta[$term->taxonomy][$id]['wpseo_desc']  = $desc;
+                    update_option('wpseo_taxonomy_meta', $tax_meta);
+
+                    // Yoast Indexables (14+) cachen meta. Trigger 'edit_term' zodat
+                    // Yoast de bijbehorende indexable rebuild — anders blijft de
+                    // oude title/desc op het frontend staan.
+                    do_action('edit_term', $id, $term->term_taxonomy_id, $term->taxonomy);
+                    do_action('edited_term', $id, $term->term_taxonomy_id, $term->taxonomy);
+                    clean_term_cache($id, $term->taxonomy);
+                }
             }
         }
     }
@@ -499,6 +645,7 @@ class RR_Ajax_Handler {
             !empty($new_title)       ? $new_title       : null,
             !empty($new_description) ? $new_description : null
         );
+
 
         // Verse stats voor realtime UI-update
         $stats     = [];

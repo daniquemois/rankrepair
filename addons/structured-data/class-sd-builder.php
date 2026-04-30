@@ -27,6 +27,12 @@ class RR_SD_Builder {
         $logo = trim(get_option('rr_sd_org_logo', ''));
         if ($logo) $org['logo'] = $logo;
 
+        $image = trim(get_option('rr_sd_org_image', ''));
+        if ($image) $org['image'] = $image;
+
+        $desc = trim(get_option('rr_sd_org_description', ''));
+        if ($desc) $org['description'] = $desc;
+
         $phone = trim(get_option('rr_sd_org_phone', ''));
         if ($phone) $org['telephone'] = $phone;
 
@@ -76,6 +82,52 @@ class RR_SD_Builder {
         }
 
         return $org;
+    }
+
+    /**
+     * Bouw losse Review items uit de handmatig ingevoerde reviews.
+     */
+    public function build_reviews(): array {
+        $raw = get_option('rr_sd_reviews', '[]');
+        $reviews = json_decode($raw, true);
+        if (!is_array($reviews)) return [];
+
+        $org_name = trim(get_option('rr_sd_org_name', '') ?: get_bloginfo('name'));
+        $org_url  = home_url('/');
+
+        $items = [];
+        foreach ($reviews as $r) {
+            if (empty($r['name']) && empty($r['reviewBody'])) continue;
+
+            $author_type = ($r['author_type'] ?? 'Organization') === 'Person' ? 'Person' : 'Organization';
+            $author_name = $r['author_name'] ?? '';
+            if (!$author_name) continue;
+
+            $review = [
+                '@type'      => 'Review',
+                'name'       => $r['name'] ?? '',
+                'reviewBody' => $r['reviewBody'] ?? '',
+                'author'     => [
+                    '@type' => $author_type,
+                    'name'  => $author_name,
+                ],
+                'itemReviewed' => [
+                    '@type' => 'Organization',
+                    'name'  => $org_name,
+                    'url'   => $org_url,
+                ],
+            ];
+            if (!empty($r['datePublished'])) $review['datePublished'] = $r['datePublished'];
+            if (!empty($r['ratingValue'])) {
+                $review['reviewRating'] = [
+                    '@type'       => 'Rating',
+                    'ratingValue' => (string) $r['ratingValue'],
+                    'bestRating'  => '5',
+                ];
+            }
+            $items[] = $review;
+        }
+        return $items;
     }
 
     public function build_website(): array {
@@ -134,7 +186,7 @@ class RR_SD_Builder {
                 'name'     => get_the_title($context['post_id']),
                 'item'     => $context['url'],
             ];
-        } elseif (in_array($context['type'], ['product_cat', 'tax'], true) && !empty($context['term'])) {
+        } elseif ((strpos($context['type'], 'product_cat') === 0 || $context['type'] === 'tax') && !empty($context['term'])) {
             $term = $context['term'];
             $ancestors = array_reverse(get_ancestors($term->term_id, $term->taxonomy));
             foreach ($ancestors as $anc_id) {
@@ -236,32 +288,108 @@ class RR_SD_Builder {
         $term = $context['term'];
         if (!$term) return null;
 
-        // Haal kinderen (sub-categorieën) op
+        $group_id = trailingslashit($context['url']) . '#productgroup';
+
+        $schema = [
+            '@type'          => 'ProductGroup',
+            '@id'            => $group_id,
+            'name'           => $term->name,
+            'productGroupID' => $term->slug,
+            'url'            => $context['url'],
+            'description'    => wp_strip_all_tags($term->description ?: ''),
+            'brand'          => ['@id' => trailingslashit(home_url('/')) . '#organization'],
+        ];
+
+        // Haal sub-categorieën op
         $children = get_terms([
             'taxonomy'   => $term->taxonomy,
             'parent'     => $term->term_id,
             'hide_empty' => false,
         ]);
 
-        $schema = [
-            '@type'          => 'ProductGroup',
-            'name'           => $term->name,
-            'productGroupID' => $term->slug,
-            'url'            => $context['url'],
-            'description'    => wp_strip_all_tags($term->description ?: ''),
-        ];
-
         if (!is_wp_error($children) && !empty($children)) {
+            // Niet-leaf categorie: kinderen als ProductGroup-variants
             $schema['hasVariant'] = array_values(array_map(function($child) {
-                return [
-                    '@type' => 'Product',
-                    'name'  => $child->name,
-                    'url'   => get_term_link($child),
+                $thumb_id = function_exists('get_term_meta') ? (int) get_term_meta($child->term_id, 'thumbnail_id', true) : 0;
+                $img      = $thumb_id ? wp_get_attachment_image_url($thumb_id, 'medium') : '';
+                $variant = [
+                    '@type'       => 'Product',
+                    'name'        => $child->name,
+                    'description' => wp_strip_all_tags($child->description ?: $child->name),
+                    'url'         => get_term_link($child),
+                    'sku'         => $child->slug,
                 ];
+                if ($img) $variant['image'] = $img;
+                return $variant;
             }, $children));
+            return $schema;
         }
 
+        // Leaf categorie: haal echte WooCommerce producten op met prijzen
+        if (!function_exists('wc_get_products')) return $schema;
+
+        $products = wc_get_products([
+            'category' => [$term->slug],
+            'status'   => 'publish',
+            'limit'    => 50,
+            'orderby'  => 'menu_order',
+            'order'    => 'ASC',
+        ]);
+
+        if (empty($products)) return $schema;
+
+        $variants = [];
+        foreach ($products as $product) {
+            $variants[] = $this->wc_product_to_variant($product, $group_id, $term);
+        }
+        if (!empty($variants)) {
+            $schema['hasVariant'] = $variants;
+        }
         return $schema;
+    }
+
+    /**
+     * Converteer een WooCommerce product naar een Product-variant binnen een ProductGroup.
+     */
+    private function wc_product_to_variant($product, string $group_id, $group_term): array {
+        $url   = $product->get_permalink();
+        $image = '';
+        $img_id = $product->get_image_id();
+        if ($img_id) $image = wp_get_attachment_image_url($img_id, 'medium');
+
+        $variant = [
+            '@type'       => 'Product',
+            'name'        => $product->get_name(),
+            'description' => wp_strip_all_tags($product->get_short_description() ?: $product->get_name()),
+            'sku'         => $product->get_sku() ?: 'product-' . $product->get_id(),
+            'url'         => $url,
+        ];
+        if ($image) $variant['image'] = $image;
+
+        $variant['isVariantOf'] = [
+            '@type'          => 'ProductGroup',
+            '@id'            => $group_id,
+            'name'           => $group_term->name,
+            'productGroupID' => $group_term->slug,
+        ];
+
+        // Prijs + voorraadstatus
+        $price = $product->get_price();
+        if ($price !== '' && $price !== null) {
+            $currency = function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'EUR';
+            $variant['offers'] = [
+                '@type'           => 'Offer',
+                'url'             => $url,
+                'priceCurrency'   => $currency,
+                'price'           => number_format((float) $price, 2, '.', ''),
+                'availability'    => $product->is_in_stock()
+                    ? 'https://schema.org/InStock'
+                    : 'https://schema.org/OutOfStock',
+                'priceValidUntil' => date('Y-12-31', strtotime('+2 years')),
+            ];
+        }
+
+        return $variant;
     }
 
     public function build_faqpage(array $context): ?array {
