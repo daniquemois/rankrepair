@@ -168,7 +168,7 @@ class RR_Updater {
     /**
      * Hernoem de uitgepakte map naar de juiste plugin-slug na installatie.
      */
-    public function after_install( bool|WP_Error $response, array $hook_extra, array $result ): array {
+    public function after_install( $response, array $hook_extra, array $result ) {
         global $wp_filesystem;
 
         if ( ( $hook_extra['plugin'] ?? '' ) !== $this->plugin_slug ) {
@@ -176,11 +176,33 @@ class RR_Updater {
         }
 
         $plugin_dir = WP_PLUGIN_DIR . '/' . dirname( $this->plugin_slug );
+        $source     = isset( $result['destination'] ) ? (string) $result['destination'] : '';
 
-        $wp_filesystem->move( $result['destination'], $plugin_dir, true );
-        $result['destination'] = $plugin_dir;
+        // Alleen verplaatsen als WP de plugin in een andere map heeft uitgepakt
+        // (bv. zipball met 'daniquemois-rankrepair-<hash>/' als top-level dir).
+        // Als de zip al 'rankrepair/' als root heeft, is dit overbodig en
+        // destructief (oude folder zou geforced-delete worden voordat de nieuwe
+        // op zijn plek staat → plugin verdwijnt bij fout).
+        if ( $source && rtrim( $source, '/' ) !== rtrim( $plugin_dir, '/' ) && $wp_filesystem->exists( $source ) ) {
+            // Alleen oude folder weghalen NA succesvolle move naar tijdelijke locatie.
+            $tmp_target = $plugin_dir . '.new-' . substr( md5( uniqid( '', true ) ), 0, 8 );
+            $moved = $wp_filesystem->move( $source, $tmp_target, false );
+            if ( $moved ) {
+                if ( $wp_filesystem->exists( $plugin_dir ) ) {
+                    $wp_filesystem->delete( $plugin_dir, true );
+                }
+                $wp_filesystem->move( $tmp_target, $plugin_dir, false );
+            }
+            $result['destination'] = $plugin_dir;
+        }
 
-        activate_plugin( $this->plugin_slug );
+        // Re-activate alleen als WP de plugin onderweg heeft uitgezet.
+        if ( ! function_exists( 'is_plugin_active' ) ) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if ( ! is_plugin_active( $this->plugin_slug ) ) {
+            activate_plugin( $this->plugin_slug, '', false, /* silent */ true );
+        }
 
         return $result;
     }
