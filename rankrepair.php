@@ -3,7 +3,7 @@
  * Plugin Name: RankRepair
  * Plugin URI: https://example.com/rankrepair
  * Description: Los veelvoorkomende SEO- en performance-problemen op met één klik. Dashboard met PageSpeed integratie en modulaire add-ons.
- * Version: 1.4.0
+ * Version: 1.5.0
  * Author: Danique
  * Author URI: https://example.com
  * License: GPL v2 or later
@@ -53,9 +53,13 @@ final class RankRepair {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-addon-base.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-ajax-handler.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-updater.php';
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
 
         $updater = new RR_Updater( RR_PLUGIN_FILE, RR_VERSION );
         $updater->init();
+
+        $agent = new RR_Agent();
+        $agent->init();
     }
 
     /**
@@ -118,6 +122,9 @@ final class RankRepair {
         add_filter('wpseo_title',              [$this, 'apply_pagination_suffix'], 20);
         add_filter('pre_get_document_title',   [$this, 'apply_pagination_suffix'], 20);
 
+        // Paginatie suffix voor meta omschrijving
+        add_filter('wpseo_metadesc',           [$this, 'apply_pagination_suffix'], 20);
+
     }
 
     public function maybe_create_tables() {
@@ -179,10 +186,16 @@ final class RankRepair {
             }
         }
 
+        // Level 4 agent: genereer credentials, schedule cron en registreer.
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
+        RR_Agent::on_activate();
+
         flush_rewrite_rules();
     }
 
     public function deactivate() {
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
+        RR_Agent::on_deactivate();
         flush_rewrite_rules();
     }
 
