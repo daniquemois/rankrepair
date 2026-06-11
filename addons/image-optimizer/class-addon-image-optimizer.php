@@ -9,7 +9,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/class-rr-display-scanner.php';
+
 class RR_Addon_Image_Optimizer extends RR_Addon_Base {
+
+    /** @var RR_Display_Scanner */
+    private $display_scanner;
 
     /** @var array Plugin options (stored under jic_options for backwards compat) */
     private $options = [];
@@ -21,6 +26,7 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
         $this->icon        = 'dashicons-format-image';
 
         $this->load_options();
+        $this->display_scanner = new RR_Display_Scanner();
         $this->register_ajax_hooks();
 
         if ($this->options['auto_compress']) {
@@ -65,6 +71,73 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
         add_action('wp_ajax_rr_img_cli_queue',     [$this, 'ajax_cli_queue']);
         add_action('wp_ajax_rr_img_clear_queue',   [$this, 'ajax_clear_queue']);
         add_action('wp_ajax_rr_img_save_settings', [$this, 'ajax_save_settings']);
+
+        // Display-size scanner (oversized for displayed dimensions)
+        add_action('wp_ajax_rr_img_ds_scan',    [$this, 'ajax_ds_scan']);
+        add_action('wp_ajax_rr_img_ds_resize',  [$this, 'ajax_ds_resize']);
+    }
+
+    // =========================================================================
+    // DISPLAY-SIZE SCANNER AJAX
+    // =========================================================================
+
+    public function ajax_ds_scan() {
+        check_ajax_referer('rr_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Geen toestemming.', 'rankrepair'));
+        }
+
+        $raw  = isset($_POST['urls']) ? wp_unslash($_POST['urls']) : '';
+        $list = array_filter(array_map('trim', preg_split('/\r?\n/', $raw)));
+        if (empty($list)) {
+            $list = [home_url('/')];
+        }
+        $list = array_slice(array_unique($list), 0, 20);
+
+        $results = $this->display_scanner->scan_urls($list);
+
+        // Add bytes-saving estimate per row (~70% of original on typical PNG/JPG resize)
+        $total_potential = 0;
+        foreach ($results as &$r) {
+            $r['est_saving_bytes'] = (int) round($r['natural_bytes'] * 0.7);
+            $r['est_saving_text']  = size_format($r['est_saving_bytes']);
+            $total_potential      += $r['est_saving_bytes'];
+            $r['pages_count']      = count($r['pages']);
+        }
+        unset($r);
+
+        wp_send_json_success([
+            'images'             => $results,
+            'total'              => count($results),
+            'urls_scanned'       => $list,
+            'total_potential'    => $total_potential,
+            'total_potential_text' => size_format($total_potential),
+        ]);
+    }
+
+    public function ajax_ds_resize() {
+        check_ajax_referer('rr_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Geen toestemming.', 'rankrepair'));
+        }
+
+        $attachment_id = isset($_POST['attachment_id']) ? absint($_POST['attachment_id']) : 0;
+        $target_width  = isset($_POST['target_width'])  ? absint($_POST['target_width'])  : 0;
+        if (!$attachment_id || !$target_width) {
+            wp_send_json_error(__('Ongeldige parameters.', 'rankrepair'));
+        }
+
+        try {
+            $result = $this->display_scanner->resize_attachment($attachment_id, $target_width);
+        } catch (\Throwable $e) {
+            error_log('[RR Display Scanner] ' . $e->getMessage());
+            wp_send_json_error($e->getMessage());
+        }
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+        wp_send_json_success($result);
     }
 
     // =========================================================================
@@ -346,6 +419,58 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
                 </table>
             </div>
 
+            <!-- ============================================ -->
+            <!--  Display-Size Scanner                        -->
+            <!-- ============================================ -->
+            <div class="rr-img-table-card" id="rr-img-ds-card" style="margin-top: 24px;">
+                <div class="rr-img-table-card__header">
+                    <div>
+                        <div class="rr-img-table-card__title"><?php _e('Te grote afmetingen voor weergave', 'rankrepair'); ?></div>
+                        <div class="rr-img-table-card__sub">
+                            <?php _e('Detecteert afbeeldingen die fysiek veel groter zijn dan ze gerenderd worden (Lighthouse: "properly sized images")', 'rankrepair'); ?>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="padding: 12px 20px; display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px solid #e5e7eb;">
+                    <div style="flex: 1;">
+                        <label style="display:block; font-size: 12px; color: #6b7280; margin-bottom: 4px;">
+                            <?php _e('URLs om te scannen (één per regel — max 20)', 'rankrepair'); ?>
+                        </label>
+                        <textarea id="rr-img-ds-urls" rows="3" style="width: 100%; font-family: monospace; font-size: 12px; padding: 6px;"
+                                  placeholder="<?php echo esc_attr(home_url('/')); ?>"><?php echo esc_textarea(home_url('/')); ?></textarea>
+                    </div>
+                    <button id="rr-img-ds-scan-btn" class="rr-img-btn rr-img-btn--green" style="align-self: flex-end;">
+                        🔍 <?php _e('Scan pagina(s)', 'rankrepair'); ?>
+                    </button>
+                </div>
+
+                <div id="rr-img-ds-summary" style="display:none; padding: 10px 20px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-size: 13px;">
+                    <strong id="rr-img-ds-count">0</strong> <?php _e('te grote afbeeldingen gevonden', 'rankrepair'); ?>
+                    · <strong><?php _e('Geschatte besparing', 'rankrepair'); ?>:</strong>
+                    <span id="rr-img-ds-savings">—</span>
+                </div>
+
+                <table class="rr-img-table" id="rr-img-ds-table" style="display:none;">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;"><?php _e('Voorbeeld', 'rankrepair'); ?></th>
+                            <th><?php _e('Bestandsnaam', 'rankrepair'); ?></th>
+                            <th><?php _e('Werkelijke afm.', 'rankrepair'); ?></th>
+                            <th><?php _e('Weergegeven', 'rankrepair'); ?></th>
+                            <th><?php _e('Verhouding', 'rankrepair'); ?></th>
+                            <th><?php _e('Voorgesteld', 'rankrepair'); ?></th>
+                            <th style="width: 140px;"><?php _e('Actie', 'rankrepair'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody id="rr-img-ds-tbody"></tbody>
+                </table>
+
+                <div id="rr-img-ds-empty" style="padding: 20px; text-align:center; color:#9ca3af;">
+                    <?php _e('Klik op "Scan pagina(s)" om te beginnen.', 'rankrepair'); ?>
+                </div>
+            </div>
+
         </div><!-- /rr-img-wrap -->
 
         <!-- Sticky Footer Bar -->
@@ -383,18 +508,44 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
         // Re-load options so we have current settings (might have changed via inline bar)
         $this->load_options();
 
+        // Determine target format. In conversion modes we include attachments that
+        // are not yet in the target format, even if previously compressed — otherwise
+        // a PNG optimized in "Origineel" mode can never be converted to WebP later.
+        $target_mime = null;
+        if (!empty($this->options['convert_to_webp'])) {
+            $target_mime = 'image/webp';
+        } elseif (!empty($this->options['convert_png_to_jpg'])) {
+            $target_mime = 'image/jpeg';
+        }
+
+        $all_image_mimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
         $args = [
             'post_type'      => 'attachment',
-            'post_mime_type' => ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+            'post_mime_type' => $target_mime
+                ? array_values(array_diff($all_image_mimes, [$target_mime]))
+                : $all_image_mimes,
             'post_status'    => 'inherit',
             'posts_per_page' => -1,
             'fields'         => 'ids',
-            'meta_query'     => [
+        ];
+
+        if ($target_mime) {
+            // Format-conversion mode: show every attachment whose current mime
+            // isn't the target — _jic_compressed flag is ignored on purpose.
+            $args['meta_query'] = [
                 'relation' => 'OR',
                 ['key' => '_jic_compressed', 'compare' => 'NOT EXISTS'],
                 ['key' => '_jic_compressed', 'value' => '0'],
-            ],
-        ];
+                ['key' => '_jic_compressed', 'value' => '1'],
+            ];
+        } else {
+            // Origineel mode: existing behaviour — only uncompressed images.
+            $args['meta_query'] = [
+                'relation' => 'OR',
+                ['key' => '_jic_compressed', 'compare' => 'NOT EXISTS'],
+                ['key' => '_jic_compressed', 'value' => '0'],
+            ];
+        }
 
         $query       = new WP_Query($args);
         $images      = [];
@@ -457,7 +608,11 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
                 'file_name'         => basename($file_path),
                 'thumb_url'         => $thumb_url ?: '',
                 'mime_type'         => $mime_type,
-                'needs_compression' => $file_size > $this->options['max_file_size'],
+                // In a format-conversion mode, every non-target-format image is
+                // a candidate — even those already under max_file_size — because
+                // PNG → WebP usually still saves significantly on disk.
+                'needs_compression' => ($file_size > $this->options['max_file_size'])
+                    || ($target_mime && $mime_type !== $target_mime),
                 'width'             => $width,
                 'height'            => $height,
                 'new_width'         => $new_w,
@@ -772,7 +927,16 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
         if (!file_exists($file_path)) { return new WP_Error('file_not_found', __('Bestand niet gevonden.', 'rankrepair')); }
         $original_size = filesize($file_path);
         $max_size = $this->options['max_file_size'];
-        if ($original_size <= $max_size) {
+
+        // Skip the "already small enough" shortcut when the caller explicitly
+        // requested a format conversion (e.g. PNG → WebP). Otherwise files under
+        // max_file_size never get converted even when the user picks WebP.
+        $current_mime = function_exists('mime_content_type') ? @mime_content_type($file_path) : null;
+        $wants_format_change =
+            ($convert_to_webp && $current_mime && $current_mime !== 'image/webp' && $current_mime !== 'image/gif') ||
+            ($convert_to_jpg  && $current_mime === 'image/png');
+
+        if ($original_size <= $max_size && !$wants_format_change) {
             if ($attachment_id > 0) {
                 update_post_meta($attachment_id, '_jic_compressed', 1);
                 update_post_meta($attachment_id, '_jic_compressed_size', $original_size);
@@ -800,12 +964,15 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
         if ($do_webp && $this->server_supports_webp() && 'image/webp' !== $mime_type && 'image/gif' !== $mime_type) { $save_mime = 'image/webp'; }
         elseif ('image/png' === $mime_type && $do_jpg) { $save_mime = 'image/jpeg'; }
         $quality = $this->options['quality']; $min_quality = 20; $temp_file = $file_path . '.rr_temp'; $success = false;
+        // max_size <= 0 means "no size target" — accept first compression result
+        // as long as it's smaller than the original (which it virtually always is).
+        $has_size_target = $max_size > 0;
         $skip_loop = ('image/gif' === $mime_type && 'image/gif' === $save_mime);
         while (!$skip_loop && $quality >= $min_quality) {
             $editor->set_quality($quality); $saved = $editor->save($temp_file, $save_mime);
             if (is_wp_error($saved)) break;
             $new_size = filesize($saved['path']);
-            if ($new_size <= $max_size) {
+            if (!$has_size_target ? $new_size < $original_size : $new_size <= $max_size) {
                 $target_path = $file_path;
                 if ($save_mime !== $mime_type) { $ext_map = ['image/jpeg' => 'jpg', 'image/webp' => 'webp']; $new_ext = $ext_map[$save_mime] ?? ''; $target_path = $new_ext ? preg_replace('/\.(png|jpg|jpeg|gif|webp)$/i', '.' . $new_ext, $file_path) : $file_path; }
                 if (copy($saved['path'], $target_path)) { $success = true; @unlink($saved['path']); if ($target_path !== $file_path && $attachment_id > 0) { @unlink($file_path); $this->update_attachment_path($attachment_id, $target_path, $save_mime); } $final_path = $target_path; $final_size = $new_size; }
@@ -820,7 +987,7 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
                 if ($new_w < 400) continue;
                 $editor->resize($new_w, $new_h, false); $editor->set_quality(max($min_quality, $this->options['quality'] - 10));
                 $saved = $editor->save($temp_file, $save_mime);
-                if (!is_wp_error($saved) && filesize($saved['path']) <= $max_size) {
+                if (!is_wp_error($saved) && (!$has_size_target ? filesize($saved['path']) < $original_size : filesize($saved['path']) <= $max_size)) {
                     $target_path = $file_path; if ($save_mime !== $mime_type) { $target_path = preg_replace('/\.png$/i', '.jpg', $file_path); }
                     if (copy($saved['path'], $target_path)) { $success = true; $final_path = $target_path; $final_size = filesize($saved['path']); @unlink($saved['path']); if ($target_path !== $file_path && $attachment_id > 0) { @unlink($file_path); $this->update_attachment_path($attachment_id, $target_path, $save_mime); } break; }
                 }

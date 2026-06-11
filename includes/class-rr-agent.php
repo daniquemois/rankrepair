@@ -28,10 +28,12 @@ class RR_Agent {
     const OPT_LAST_RESPONSE    = 'rr_agent_last_response';
     const OPT_LINKED_CLIENT    = 'rr_agent_linked_client';
     const CRON_HOOK            = 'rr_agent_heartbeat_event';
+    const CRON_POLL_HOOK       = 'rr_agent_poll_event';
 
     public function init(): void {
         // Cron
         add_action( self::CRON_HOOK, [ $this, 'do_heartbeat' ] );
+        add_action( self::CRON_POLL_HOOK, [ $this, 'do_poll_jobs' ] );
         add_filter( 'cron_schedules', [ $this, 'add_cron_schedule' ] );
 
         // Admin
@@ -55,8 +57,9 @@ class RR_Agent {
     public function maybe_bootstrap(): void {
         $needs_credentials = ! get_option( self::OPT_SITE_ID ) || ! get_option( self::OPT_API_KEY );
         $needs_cron        = ! wp_next_scheduled( self::CRON_HOOK );
+        $needs_poll_cron   = ! wp_next_scheduled( self::CRON_POLL_HOOK );
 
-        if ( ! $needs_credentials && ! $needs_cron ) {
+        if ( ! $needs_credentials && ! $needs_cron && ! $needs_poll_cron ) {
             return;
         }
 
@@ -71,6 +74,9 @@ class RR_Agent {
 
         if ( $needs_cron ) {
             wp_schedule_event( time() + 60, 'rr_six_hours', self::CRON_HOOK );
+        }
+        if ( $needs_poll_cron ) {
+            wp_schedule_event( time() + 30, 'rr_one_minute', self::CRON_POLL_HOOK );
         }
 
         // Schedule one-off register-call over 30 sec (non-blocking)
@@ -104,6 +110,12 @@ class RR_Agent {
                 'display'  => __( 'Every 6 hours (RankRepair)', 'rankrepair' ),
             ];
         }
+        if ( ! isset( $schedules['rr_one_minute'] ) ) {
+            $schedules['rr_one_minute'] = [
+                'interval' => 60,
+                'display'  => __( 'Every minute (RankRepair poll)', 'rankrepair' ),
+            ];
+        }
         return $schedules;
     }
 
@@ -122,6 +134,9 @@ class RR_Agent {
         if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
             wp_schedule_event( time() + 60, 'rr_six_hours', self::CRON_HOOK );
         }
+        if ( ! wp_next_scheduled( self::CRON_POLL_HOOK ) ) {
+            wp_schedule_event( time() + 30, 'rr_one_minute', self::CRON_POLL_HOOK );
+        }
 
         // Probeer direct te registreren bij Level 4 (best effort, niet blokkerend)
         ( new self() )->register_with_level4();
@@ -131,6 +146,10 @@ class RR_Agent {
         $ts = wp_next_scheduled( self::CRON_HOOK );
         if ( $ts ) {
             wp_unschedule_event( $ts, self::CRON_HOOK );
+        }
+        $ts_poll = wp_next_scheduled( self::CRON_POLL_HOOK );
+        if ( $ts_poll ) {
+            wp_unschedule_event( $ts_poll, self::CRON_POLL_HOOK );
         }
     }
 
@@ -389,6 +408,20 @@ class RR_Agent {
             return new WP_REST_Response( [ 'error' => 'no_slugs' ], 400 );
         }
 
+        $started = microtime( true );
+        $results = $this->perform_kind_updates( $kind, $slugs );
+        return new WP_REST_Response( [
+            'job_id'            => $job_id,
+            'results'           => $results,
+            'total_duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
+        ], 200 );
+    }
+
+    /**
+     * Voert plugin/theme/core updates uit en retourneert per slug een result-array.
+     * Gedeelde logica tussen REST (push) en cron-poll (pull) flow.
+     */
+    private function perform_kind_updates( string $kind, array $slugs ): array {
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/misc.php';
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
@@ -396,7 +429,6 @@ class RR_Agent {
         require_once ABSPATH . 'wp-admin/includes/theme.php';
 
         $results = [];
-        $started = microtime( true );
 
         if ( $kind === 'plugin' ) {
             $upgrader = new Plugin_Upgrader( new Automatic_Upgrader_Skin() );
@@ -499,11 +531,87 @@ class RR_Agent {
             }
         }
 
-        return new WP_REST_Response( [
-            'job_id'        => $job_id,
-            'results'       => $results,
-            'total_duration_ms' => (int) round( ( microtime( true ) - $started ) * 1000 ),
-        ], 200 );
+        return $results;
+    }
+
+    // ── Pull-flow: poll Level 4 voor pending update-jobs ────────────────────
+
+    public function do_poll_jobs(): void {
+        $site_id = (string) get_option( self::OPT_SITE_ID );
+        $api_key = (string) get_option( self::OPT_API_KEY );
+        if ( ! $site_id || ! $api_key ) {
+            return;
+        }
+
+        $payload = [ 'site_url' => home_url(), 'rr_version' => defined( 'RR_VERSION' ) ? RR_VERSION : '' ];
+        $body    = wp_json_encode( $payload );
+        $sig     = hash_hmac( 'sha256', $body, $api_key );
+
+        $response = wp_remote_post( self::get_level4_url() . '/api/wp-agent/poll-jobs', [
+            'timeout' => 15,
+            'headers' => [
+                'Content-Type'   => 'application/json',
+                'X-RR-Site-Id'   => $site_id,
+                'X-RR-Signature' => $sig,
+            ],
+            'body'    => $body,
+        ] );
+
+        if ( is_wp_error( $response ) ) {
+            return;
+        }
+        $code = wp_remote_retrieve_response_code( $response );
+        if ( $code !== 200 ) {
+            return;
+        }
+        $resp = json_decode( wp_remote_retrieve_body( $response ), true );
+        $jobs = ( is_array( $resp ) && isset( $resp['jobs'] ) && is_array( $resp['jobs'] ) ) ? $resp['jobs'] : [];
+        if ( empty( $jobs ) ) {
+            return;
+        }
+
+        foreach ( $jobs as $job ) {
+            $job_id = isset( $job['id'] ) ? (string) $job['id'] : '';
+            $kind   = isset( $job['kind'] ) ? (string) $job['kind'] : '';
+            $slug   = isset( $job['slug'] ) ? (string) $job['slug'] : '';
+            if ( ! $job_id || ! in_array( $kind, [ 'plugin', 'theme', 'core' ], true ) ) {
+                continue;
+            }
+
+            $started = microtime( true );
+            $results = $this->perform_kind_updates( $kind, $kind === 'core' ? [] : [ $slug ] );
+            $r = isset( $results[0] ) ? $results[0] : null;
+            $total_ms = (int) round( ( microtime( true ) - $started ) * 1000 );
+
+            $this->report_job_result( $job_id, $r, $total_ms );
+        }
+    }
+
+    private function report_job_result( string $job_id, ?array $r, int $total_ms ): void {
+        $site_id = (string) get_option( self::OPT_SITE_ID );
+        $api_key = (string) get_option( self::OPT_API_KEY );
+
+        $payload = [
+            'job_id'      => $job_id,
+            'ok'          => $r && ! empty( $r['ok'] ),
+            'from'        => $r['from'] ?? null,
+            'to'          => $r['to'] ?? null,
+            'note'        => $r['note'] ?? null,
+            'error'       => $r['error'] ?? null,
+            'duration_ms' => $r['duration_ms'] ?? $total_ms,
+        ];
+        $body = wp_json_encode( $payload );
+        $sig  = hash_hmac( 'sha256', $body, $api_key );
+
+        wp_remote_post( self::get_level4_url() . '/api/wp-agent/job-result', [
+            'timeout' => 10,
+            'headers' => [
+                'Content-Type'   => 'application/json',
+                'X-RR-Site-Id'   => $site_id,
+                'X-RR-Signature' => $sig,
+            ],
+            'body'    => $body,
+        ] );
     }
 
     public function rest_visual_check(): WP_REST_Response {

@@ -336,8 +336,17 @@ class RR_Addon_Structured_Data extends RR_Addon_Base {
      * Detect welke pagina-context we nu renderen.
      */
     private function detect_context(): array {
-        if (is_front_page() || is_home()) {
+        if (is_front_page()) {
             return ['type' => 'home', 'url' => home_url('/')];
+        }
+        // is_home() = blog overzichtspagina (de "Posts page" in WP settings)
+        if (is_home()) {
+            $blog_id = (int) get_option('page_for_posts');
+            return [
+                'type'    => 'blog_index',
+                'post_id' => $blog_id ?: 0,
+                'url'     => $blog_id ? get_permalink($blog_id) : home_url('/'),
+            ];
         }
         if (function_exists('is_product') && is_product()) {
             global $post;
@@ -356,15 +365,26 @@ class RR_Addon_Structured_Data extends RR_Addon_Base {
                 'url'      => get_term_link($term),
             ];
         }
-        if (is_tax() || is_category() || is_tag()) {
+        // Blog categorie krijgt eigen type zodat de 'category' inspector tab matcht
+        if (is_category()) {
             $term  = get_queried_object();
-            $depth = self::term_depth($term);
+            return [
+                'type'     => 'category',
+                'term_id'  => $term->term_id,
+                'term'     => $term,
+                'taxonomy' => $term->taxonomy,
+                'depth'    => self::term_depth($term),
+                'url'      => get_term_link($term),
+            ];
+        }
+        if (is_tax() || is_tag()) {
+            $term  = get_queried_object();
             return [
                 'type'     => 'tax',
                 'term_id'  => $term->term_id,
                 'term'     => $term,
                 'taxonomy' => $term->taxonomy,
-                'depth'    => $depth,
+                'depth'    => self::term_depth($term),
                 'url'      => get_term_link($term),
             ];
         }
@@ -374,6 +394,11 @@ class RR_Addon_Structured_Data extends RR_Addon_Base {
         }
         if (is_page()) {
             global $post;
+            // Detecteer contactpagina via slug/title (of via filter override)
+            $contact_id = (int) apply_filters('rr_sd_contact_page_id', self::detect_contact_page_id());
+            if ($contact_id && (int) $post->ID === $contact_id) {
+                return ['type' => 'contact', 'post_id' => $post->ID, 'url' => get_permalink($post->ID)];
+            }
             return ['type' => 'page', 'post_id' => $post->ID, 'url' => get_permalink($post->ID)];
         }
         if (is_singular()) {
@@ -381,6 +406,31 @@ class RR_Addon_Structured_Data extends RR_Addon_Base {
             return ['type' => 'singular', 'post_id' => $post->ID, 'url' => get_permalink($post->ID)];
         }
         return ['type' => 'other', 'url' => home_url(add_query_arg(null, null))];
+    }
+
+    /**
+     * Detecteer de contactpagina (via slug of title).
+     * Cached in een transient zodat we niet elke pageload de DB doorzoeken.
+     */
+    public static function detect_contact_page_id(): int {
+        $cached = get_transient('rr_sd_contact_page_id');
+        if ($cached !== false) return (int) $cached;
+
+        $page = get_page_by_path('contact', OBJECT, 'page');
+        if (!$page) {
+            // Probeer titel "Contact" / "Contactpagina"
+            $q = new WP_Query([
+                'post_type'      => 'page',
+                'post_status'    => 'publish',
+                'posts_per_page' => 1,
+                'title'          => 'Contact',
+            ]);
+            if ($q->have_posts()) $page = $q->posts[0];
+        }
+
+        $id = $page ? (int) $page->ID : 0;
+        set_transient('rr_sd_contact_page_id', $id, HOUR_IN_SECONDS);
+        return $id;
     }
 
     /**

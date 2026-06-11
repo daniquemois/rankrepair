@@ -472,6 +472,15 @@ class RR_SD_Scanner {
             ],
         ];
 
+        // Blog overzichtspagina (de page die als "Posts page" is ingesteld)
+        $blog_page_id = (int) get_option('page_for_posts');
+        if ($blog_page_id && get_post($blog_page_id)) {
+            $types['blog_index'] = [
+                'label' => __('Blog overzicht', 'rankrepair'),
+                'url'   => get_permalink($blog_page_id),
+            ];
+        }
+
         $recent_post = get_posts(['post_type' => 'post', 'numberposts' => 1, 'post_status' => 'publish']);
         if ($recent_post) {
             $types['post'] = [
@@ -479,6 +488,17 @@ class RR_SD_Scanner {
                 'url'   => get_permalink($recent_post[0]->ID),
                 'count' => (int) wp_count_posts('post')->publish,
             ];
+        }
+
+        // Contactpagina (auto-detect via slug/title)
+        if (class_exists('RR_Addon_Structured_Data')) {
+            $contact_id = RR_Addon_Structured_Data::detect_contact_page_id();
+            if ($contact_id && get_post($contact_id)) {
+                $types['contact'] = [
+                    'label' => __('Contactpagina', 'rankrepair'),
+                    'url'   => get_permalink($contact_id),
+                ];
+            }
         }
 
         $recent_page = get_posts(['post_type' => 'page', 'numberposts' => 1, 'post_status' => 'publish']);

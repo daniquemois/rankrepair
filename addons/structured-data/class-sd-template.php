@@ -28,9 +28,18 @@ class RR_SD_Template {
             $json = str_replace($needle, $replacement, $json);
         }
 
-        // Stap 2: scalar tokens (gewone string-replace, ook binnen langere strings)
+        // Stap 2: scalar tokens — JSON-escape de waarde zodat newlines, quotes en
+        // backslashes binnen string-slots geldige JSON blijven opleveren.
         foreach ($this->build_scalar_vars($context) as $key => $value) {
-            $json = str_replace('{{' . $key . '}}', (string) $value, $json);
+            $escaped = wp_json_encode((string) $value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            // wp_json_encode wraps de string in quotes — strip die omdat onze
+            // placeholder al binnen "..." staat in de template.
+            if (is_string($escaped) && strlen($escaped) >= 2) {
+                $escaped = substr($escaped, 1, -1);
+            } else {
+                $escaped = (string) $value;
+            }
+            $json = str_replace('{{' . $key . '}}', $escaped, $json);
         }
 
         return $json;
@@ -54,6 +63,23 @@ class RR_SD_Template {
             'children_variants'      => '[ARRAY] sub-categorieën — basic (name/url/sku/image)',
             'children_variants_rich' => '[ARRAY] sub-categorieën met volledige Offer + Shipping + Return policy',
             'product_variants'       => '[ARRAY] WooCommerce producten met prijs (voor L3 leaf-categorieën)',
+
+            // Blog post / page placeholders
+            'date_published'         => 'ISO 8601 publicatie-datum (BlogPosting)',
+            'date_modified'          => 'ISO 8601 laatste-gewijzigd datum',
+            'author_name'            => 'Naam van post-auteur',
+            'featured_image'         => 'URL van uitgelichte afbeelding (large)',
+
+            // Productpagina-placeholders (alleen gevuld op single product)
+            'product_name'                 => 'Naam van WooCommerce product',
+            'product_sku'                  => 'SKU van WooCommerce product',
+            'product_category'             => 'Naam van primaire WC-categorie',
+            'product_description'          => 'Korte beschrijving van product',
+            'product_price_excl'           => 'Productprijs excl. BTW',
+            'product_availability'         => 'In/Out of stock URL (schema.org/InStock of /OutOfStock)',
+            'product_images'               => '[ARRAY] alle productafbeeldingen (featured + gallery)',
+            'product_attributes'           => '[ARRAY] zichtbare productattributen als PropertyValue[]',
+            'product_price_specifications' => '[ARRAY] UnitPriceSpecification ex/incl BTW',
         ];
     }
 
@@ -61,17 +87,79 @@ class RR_SD_Template {
         $term = $context['term'] ?? null;
         $url  = $context['url'] ?? home_url('/');
 
-        return [
+        // name/slug/description: bij term uit term, anders uit post (page/post/blog_index)
+        $name = $slug = $description = '';
+        if ($term) {
+            $name        = $term->name;
+            $slug        = $term->slug;
+            $description = wp_strip_all_tags($term->description ?: $term->name);
+        } elseif (!empty($context['post_id'])) {
+            $post = get_post($context['post_id']);
+            if ($post) {
+                $name = get_the_title($post);
+                $slug = $post->post_name;
+                // Voorkeur: Yoast metadesc → excerpt → trimmed content
+                $yoast_desc = get_post_meta($post->ID, '_yoast_wpseo_metadesc', true);
+                if (!empty($yoast_desc)) {
+                    $description = $yoast_desc;
+                } elseif (!empty($post->post_excerpt)) {
+                    $description = wp_strip_all_tags($post->post_excerpt);
+                } else {
+                    $description = wp_trim_words(wp_strip_all_tags($post->post_content), 30);
+                }
+            }
+        }
+
+        $vars = [
             'site_name'     => get_bloginfo('name'),
             'home_url'      => trailingslashit(home_url('/')),
             'org_id'        => trailingslashit(home_url('/')) . '#organization',
             'url'           => $url,
-            'name'          => $term ? $term->name : '',
-            'slug'          => $term ? $term->slug : '',
-            'description'   => $term ? wp_strip_all_tags($term->description ?: $term->name) : '',
-            'group_id'      => trailingslashit($url) . '#productgroup',
-            'breadcrumb_id' => trailingslashit($url) . '#breadcrumbs',
+            'name'          => $name,
+            'slug'          => $slug,
+            'description'   => $description,
+            'group_id'        => trailingslashit($url) . '#productgroup',
+            'breadcrumb_id'   => trailingslashit($url) . '#breadcrumbs',
+            'date_published'  => '',
+            'date_modified'   => '',
+            'author_name'     => '',
+            'featured_image'  => '',
         ];
+
+        // Post-specifieke data (voor blog posts / pages)
+        if (!empty($context['post_id']) && empty($vars['product_name'])) {
+            $post = get_post($context['post_id']);
+            if ($post) {
+                $vars['date_published'] = mysql2date('c', $post->post_date_gmt ?: $post->post_date, false);
+                $vars['date_modified']  = mysql2date('c', $post->post_modified_gmt ?: $post->post_modified, false);
+                $author = get_userdata((int) $post->post_author);
+                $vars['author_name']    = $author ? $author->display_name : '';
+                $thumb_id = get_post_thumbnail_id($post->ID);
+                if ($thumb_id) {
+                    $img = wp_get_attachment_image_url($thumb_id, 'large');
+                    if ($img) $vars['featured_image'] = $img;
+                }
+            }
+        }
+
+        if (!empty($context['post_id']) && function_exists('wc_get_product')) {
+            $product = wc_get_product($context['post_id']);
+            if ($product) {
+                $cats       = wc_get_product_terms($product->get_id(), 'product_cat', ['fields' => 'names']);
+                $price_excl = wc_get_price_excluding_tax($product);
+
+                $vars['product_name']         = $product->get_name();
+                $vars['product_sku']          = $product->get_sku() ?: 'product-' . $product->get_id();
+                $vars['product_category']     = $cats ? end($cats) : '';
+                $vars['product_description']  = wp_strip_all_tags($product->get_short_description() ?: $product->get_name());
+                $vars['product_price_excl']   = is_numeric($price_excl) ? number_format((float) $price_excl, 2, '.', '') : '';
+                $vars['product_availability'] = $product->is_in_stock()
+                    ? 'https://schema.org/InStock'
+                    : 'https://schema.org/OutOfStock';
+            }
+        }
+
+        return $vars;
     }
 
     /**
@@ -84,7 +172,52 @@ class RR_SD_Template {
             'children_variants_rich' => $this->build_children_variants_rich($context),
             'product_variants'       => $this->build_product_variants($context),
         ];
+
+        if (!empty($context['post_id']) && function_exists('wc_get_product')) {
+            $product = wc_get_product($context['post_id']);
+            if ($product) {
+                $vars['product_images']               = $this->build_product_images($product);
+                $vars['product_attributes']           = $this->build_product_attributes($product);
+                $vars['product_price_specifications'] = $this->build_product_price_specifications($product);
+            }
+        }
+
         return $vars;
+    }
+
+    private function build_product_images($product): array {
+        $images = [];
+        if ($product->get_image_id()) {
+            $images[] = wp_get_attachment_image_url($product->get_image_id(), 'large');
+        }
+        foreach ($product->get_gallery_image_ids() as $gid) {
+            $images[] = wp_get_attachment_image_url($gid, 'large');
+        }
+        return array_values(array_filter($images));
+    }
+
+    private function build_product_attributes($product): array {
+        $props = [];
+        foreach ($product->get_attributes() as $attr) {
+            if (!is_object($attr) || !$attr->get_visible()) continue;
+            $label = wc_attribute_label($attr->get_name(), $product);
+            $value = $product->get_attribute($attr->get_name());
+            if ($label !== '' && $value !== '') {
+                $props[] = ['@type' => 'PropertyValue', 'name' => $label, 'value' => $value];
+            }
+        }
+        return $props;
+    }
+
+    private function build_product_price_specifications($product): array {
+        $excl = (float) wc_get_price_excluding_tax($product);
+        $incl = (float) wc_get_price_including_tax($product);
+        if ($excl <= 0 && $incl <= 0) return [];
+        $currency = function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'EUR';
+        return [
+            ['@type' => 'UnitPriceSpecification', 'priceCurrency' => $currency, 'price' => number_format($excl, 2, '.', ''), 'valueAddedTaxIncluded' => false],
+            ['@type' => 'UnitPriceSpecification', 'priceCurrency' => $currency, 'price' => number_format($incl, 2, '.', ''), 'valueAddedTaxIncluded' => true],
+        ];
     }
 
     private function build_breadcrumb_items(array $context): array {
@@ -116,6 +249,74 @@ class RR_SD_Template {
                 'name'     => $term->name,
                 'item'     => get_term_link($term),
             ];
+        } elseif (!empty($context['post_id']) && ($context['type'] ?? '') === 'product' && function_exists('wc_get_product_terms')) {
+            $cats = wc_get_product_terms($context['post_id'], 'product_cat', [
+                'orderby' => 'parent',
+                'order'   => 'ASC',
+            ]);
+            if (!empty($cats) && !is_wp_error($cats)) {
+                $primary   = end($cats);
+                $ancestors = array_reverse(get_ancestors($primary->term_id, 'product_cat'));
+                foreach ($ancestors as $aid) {
+                    $a = get_term($aid, 'product_cat');
+                    if ($a && !is_wp_error($a)) {
+                        $items[] = [
+                            '@type'    => 'ListItem',
+                            'position' => $pos++,
+                            'name'     => $a->name,
+                            'item'     => get_term_link($a),
+                        ];
+                    }
+                }
+                $items[] = [
+                    '@type'    => 'ListItem',
+                    'position' => $pos++,
+                    'name'     => $primary->name,
+                    'item'     => get_term_link($primary),
+                ];
+            }
+            $items[] = [
+                '@type'    => 'ListItem',
+                'position' => $pos++,
+                'name'     => get_the_title($context['post_id']),
+                'item'     => $context['url'] ?? get_permalink($context['post_id']),
+            ];
+        } elseif (!empty($context['post_id'])) {
+            $type    = $context['type'] ?? '';
+            $post_id = (int) $context['post_id'];
+            $post    = get_post($post_id);
+
+            // Voor blog posts: Home → Blog overzicht → Post titel
+            if ($post && $type === 'post') {
+                $blog_id = (int) get_option('page_for_posts');
+                if ($blog_id && get_post($blog_id)) {
+                    $items[] = [
+                        '@type'    => 'ListItem',
+                        'position' => $pos++,
+                        'name'     => get_the_title($blog_id),
+                        'item'     => get_permalink($blog_id),
+                    ];
+                }
+            }
+
+            // Page-parents (geneste pagina-hiërarchie)
+            if ($post) {
+                $ancestors = array_reverse(get_post_ancestors($post_id));
+                foreach ($ancestors as $anc_id) {
+                    $items[] = [
+                        '@type'    => 'ListItem',
+                        'position' => $pos++,
+                        'name'     => get_the_title($anc_id),
+                        'item'     => get_permalink($anc_id),
+                    ];
+                }
+                $items[] = [
+                    '@type'    => 'ListItem',
+                    'position' => $pos++,
+                    'name'     => get_the_title($post),
+                    'item'     => get_permalink($post),
+                ];
+            }
         }
         return $items;
     }
@@ -266,11 +467,174 @@ class RR_SD_Template {
                 return self::example_l2();
             case 'product_cat_l3':
                 return self::example_l3();
+            case 'product':
+                return self::example_product();
             case 'home':
                 return self::example_home();
+            case 'blog_index':
+                return self::example_blog_index();
+            case 'post':
+                return self::example_blog_post();
+            case 'category':
+                return self::example_blog_category();
+            case 'page':
+                return self::example_page();
+            case 'contact':
+                return self::example_contact();
             default:
                 return '';
         }
+    }
+
+    private static function example_contact(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'         => 'ContactPage',
+                    '@id'           => '{{url}}#contactpage',
+                    'name'          => '{{name}}',
+                    'url'           => '{{url}}',
+                    'description'   => '{{description}}',
+                    'isPartOf'      => ['@id' => '{{home_url}}'],
+                    'mainEntity'    => [
+                        '@type'         => 'Organization',
+                        '@id'           => '{{org_id}}',
+                        'name'          => '{{site_name}}',
+                        'url'           => '{{home_url}}',
+                        'contactPoint'  => [
+                            '@type'             => 'ContactPoint',
+                            'contactType'       => 'Customer Service',
+                            'telephone'         => '+31318520298',
+                            'email'             => 'info@sabeverpakkingen.nl',
+                            'areaServed'        => 'NL',
+                            'availableLanguage' => ['Dutch', 'English'],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    private static function example_blog_index(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'       => 'Blog',
+                    '@id'         => '{{url}}#blog',
+                    'name'        => '{{name}}',
+                    'url'         => '{{url}}',
+                    'description' => '{{description}}',
+                    'publisher'   => ['@id' => '{{org_id}}'],
+                ],
+            ],
+        ]);
+    }
+
+    private static function example_blog_post(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'            => 'BlogPosting',
+                    '@id'              => '{{url}}#article',
+                    'headline'         => '{{name}}',
+                    'url'              => '{{url}}',
+                    'description'      => '{{description}}',
+                    'mainEntityOfPage' => ['@id' => '{{url}}'],
+                    'publisher'        => ['@id' => '{{org_id}}'],
+                ],
+            ],
+        ]);
+    }
+
+    private static function example_blog_category(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'       => 'CollectionPage',
+                    '@id'         => '{{url}}#collection',
+                    'name'        => '{{name}}',
+                    'url'         => '{{url}}',
+                    'description' => '{{description}}',
+                    'isPartOf'    => ['@id' => '{{home_url}}#blog'],
+                ],
+            ],
+        ]);
+    }
+
+    private static function example_page(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'       => 'WebPage',
+                    '@id'         => '{{url}}',
+                    'name'        => '{{name}}',
+                    'url'         => '{{url}}',
+                    'description' => '{{description}}',
+                    'isPartOf'    => ['@id' => '{{home_url}}'],
+                    'publisher'   => ['@id' => '{{org_id}}'],
+                ],
+            ],
+        ]);
     }
 
     private static function example_home(): string {
@@ -330,6 +694,44 @@ class RR_SD_Template {
                     'description'    => '{{description}}',
                     'brand'          => ['@id' => '{{org_id}}'],
                     'hasVariant'     => '{{children_variants}}',
+                ],
+            ],
+        ]);
+    }
+
+    private static function example_product(): string {
+        return self::pretty_json([
+            '@context' => 'https://schema.org',
+            '@graph'   => [
+                [
+                    '@type' => 'Organization',
+                    '@id'   => '{{org_id}}',
+                    'name'  => '{{site_name}}',
+                    'url'   => '{{home_url}}',
+                ],
+                [
+                    '@type'           => 'BreadcrumbList',
+                    '@id'             => '{{breadcrumb_id}}',
+                    'itemListElement' => '{{breadcrumb_items}}',
+                ],
+                [
+                    '@type'              => 'Product',
+                    'name'               => '{{product_name}}',
+                    'url'                => '{{url}}',
+                    'sku'                => '{{product_sku}}',
+                    'category'           => '{{product_category}}',
+                    'image'              => '{{product_images}}',
+                    'description'        => '{{product_description}}',
+                    'additionalProperty' => '{{product_attributes}}',
+                    'offers'             => [
+                        '@type'              => 'Offer',
+                        'url'                => '{{url}}',
+                        'availability'       => '{{product_availability}}',
+                        'priceCurrency'      => 'EUR',
+                        'price'              => '{{product_price_excl}}',
+                        'seller'             => ['@id' => '{{org_id}}'],
+                        'priceSpecification' => '{{product_price_specifications}}',
+                    ],
                 ],
             ],
         ]);

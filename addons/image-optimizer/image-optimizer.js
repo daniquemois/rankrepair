@@ -25,6 +25,7 @@
             this.bindSettingsBar();
             this.bindTableEvents();
             this.bindFooterBar();
+            this.bindDisplayScanner();
             this.autoScan();
         },
 
@@ -547,6 +548,106 @@
             a.href = url; a.download = 'rankrepair-afbeeldingen-rapport.csv';
             document.body.appendChild(a); a.click();
             document.body.removeChild(a); URL.revokeObjectURL(url);
+        },
+
+        // =====================================================================
+        // Display-Size Scanner
+        // =====================================================================
+
+        bindDisplayScanner: function () {
+            $(document).on('click', '#rr-img-ds-scan-btn', function () {
+                RRImg.runDisplayScan();
+            });
+
+            $(document).on('click', '.rr-img-ds-resize-btn', function () {
+                var $btn = $(this);
+                var id   = parseInt($btn.data('id'), 10);
+                var w    = parseInt($btn.data('width'), 10);
+                if (!id || !w) return;
+                if (!confirm('Verkleinen naar ' + w + 'px breed? Origineel wordt gebackupt.')) return;
+                $btn.prop('disabled', true).text('Bezig...');
+
+                $.post(rrAdmin.ajaxUrl, {
+                    action:        'rr_img_ds_resize',
+                    nonce:         rrAdmin.nonce,
+                    attachment_id: id,
+                    target_width:  w
+                }).done(function (resp) {
+                    if (resp.success) {
+                        var msg = resp.data.message || 'Klaar';
+                        $btn.closest('tr').find('.rr-img-ds-status').html('<span style="color:#10b981;font-weight:600">✓ ' + RRImg.esc(msg) + '</span>');
+                        $btn.text('Klaar').css({background: '#10b981'});
+                    } else {
+                        $btn.prop('disabled', false).text('Verkleinen');
+                        alert('Fout: ' + (resp.data || 'onbekend'));
+                    }
+                }).fail(function () {
+                    $btn.prop('disabled', false).text('Verkleinen');
+                    alert('Verbindingsfout.');
+                });
+            });
+        },
+
+        runDisplayScan: function () {
+            var urls = $('#rr-img-ds-urls').val();
+            var $btn = $('#rr-img-ds-scan-btn');
+            $btn.prop('disabled', true).text('Scannen...');
+            $('#rr-img-ds-empty').text('Bezig met scannen — kan tot 30 sec duren per pagina...').show();
+            $('#rr-img-ds-table, #rr-img-ds-summary').hide();
+
+            $.post(rrAdmin.ajaxUrl, {
+                action: 'rr_img_ds_scan',
+                nonce:  rrAdmin.nonce,
+                urls:   urls
+            }).done(function (resp) {
+                $btn.prop('disabled', false).text('🔍 Scan pagina(s)');
+                if (!resp.success) {
+                    $('#rr-img-ds-empty').text('Fout: ' + (resp.data || 'onbekend')).show();
+                    return;
+                }
+                RRImg.renderDisplayScanResults(resp.data);
+            }).fail(function () {
+                $btn.prop('disabled', false).text('🔍 Scan pagina(s)');
+                $('#rr-img-ds-empty').text('Verbindingsfout.').show();
+            });
+        },
+
+        renderDisplayScanResults: function (data) {
+            var imgs = data.images || [];
+            $('#rr-img-ds-count').text(imgs.length);
+            $('#rr-img-ds-savings').text(data.total_potential_text || '—');
+            $('#rr-img-ds-summary').show();
+
+            if (!imgs.length) {
+                $('#rr-img-ds-table').hide();
+                $('#rr-img-ds-empty').text('Geen te grote afbeeldingen gevonden op deze pagina(s). 👍').show();
+                return;
+            }
+
+            var $tbody = $('#rr-img-ds-tbody').empty();
+            imgs.forEach(function (img) {
+                var pagesText = img.pages_count > 1 ? ' (op ' + img.pages_count + ' pagina\'s)' : '';
+                var $row = $('<tr></tr>');
+                $row.html(
+                    '<td><img src="' + RRImg.esc(img.src) + '" style="max-width:48px;max-height:48px;border-radius:4px"></td>' +
+                    '<td><strong>' + RRImg.esc(img.file_name) + '</strong>' +
+                        '<div style="font-size:11px;color:#6b7280">' + RRImg.esc(img.natural_size_text) + pagesText + '</div></td>' +
+                    '<td>' + img.natural_w + ' × ' + img.natural_h + 'px</td>' +
+                    '<td>' + img.displayed_w + ' × ' + img.displayed_h + 'px</td>' +
+                    '<td><span style="color:#ef4444;font-weight:600">' + img.ratio + '×</span></td>' +
+                    '<td>' + img.target_w + 'px</td>' +
+                    '<td class="rr-img-ds-action">' +
+                        '<button class="rr-img-btn rr-img-btn--green rr-img-btn--sm rr-img-ds-resize-btn" ' +
+                            'data-id="' + img.attachment_id + '" data-width="' + img.target_w + '">' +
+                            'Verkleinen</button>' +
+                        '<div class="rr-img-ds-status" style="margin-top:4px;font-size:11px"></div>' +
+                    '</td>'
+                );
+                $tbody.append($row);
+            });
+
+            $('#rr-img-ds-table').show();
+            $('#rr-img-ds-empty').hide();
         },
 
         // =====================================================================
