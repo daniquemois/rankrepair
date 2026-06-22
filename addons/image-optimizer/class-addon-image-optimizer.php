@@ -1031,9 +1031,33 @@ class RR_Addon_Image_Optimizer extends RR_Addon_Base {
 
     private function update_attachment_path($attachment_id, $new_path, $new_mime) {
         $upload_dir = wp_upload_dir(); $relative_path = str_replace(trailingslashit($upload_dir['basedir']), '', $new_path);
-        update_attached_file($attachment_id, $relative_path); wp_update_post(['ID' => $attachment_id, 'post_mime_type' => $new_mime]);
+        // Oude URL bepalen VÓÓR we het record bijwerken, zodat we hardcoded
+        // verwijzingen in content kunnen omschrijven naar de nieuwe (webp) URL.
+        $old_rel = get_post_meta($attachment_id, '_wp_attached_file', true);
+        $old_url = $old_rel ? trailingslashit($upload_dir['baseurl']) . $old_rel : '';
         $new_url = trailingslashit($upload_dir['baseurl']) . $relative_path;
+        update_attached_file($attachment_id, $relative_path); wp_update_post(['ID' => $attachment_id, 'post_mime_type' => $new_mime]);
         $GLOBALS['wpdb']->update($GLOBALS['wpdb']->posts, ['guid' => $new_url], ['ID' => $attachment_id]);
+        // Het originele bestand is na conversie verwijderd; verwijzingen in
+        // post-content blijven anders naar de oude (.png/.jpg) URL wijzen → 404.
+        if ($old_url && $old_url !== $new_url) {
+            $this->rewrite_content_image_urls($old_url, $new_url);
+        }
+    }
+
+    /**
+     * Werk hardcoded verwijzingen naar de oude afbeeldings-URL bij naar de nieuwe URL
+     * in post-content. post_content is geen geserialiseerde data, dus een directe
+     * REPLACE is veilig. (Postmeta wordt overgeslagen: dat is vaak geserialiseerd en
+     * afbeeldingen daar worden doorgaans via attachment-ID gerenderd, niet via URL.)
+     */
+    private function rewrite_content_image_urls($old_url, $new_url) {
+        global $wpdb;
+        $affected = $wpdb->query($wpdb->prepare(
+            "UPDATE {$wpdb->posts} SET post_content = REPLACE(post_content, %s, %s) WHERE post_content LIKE %s",
+            $old_url, $new_url, '%' . $wpdb->esc_like($old_url) . '%'
+        ));
+        return (int) $affected;
     }
 }
 

@@ -61,6 +61,9 @@ Ja! RankRepair is modulair opgebouwd. Je kunt eenvoudig nieuwe add-ons toevoegen
 
 == Changelog ==
 
+= 1.6.1 =
+* Image Optimizer fix: na WebP-conversie worden hardcoded afbeeldings-URL's in post-content automatisch omgeschreven naar de nieuwe .webp-URL. Voorheen bleef het originele (verwijderde) .png/.jpg in content staan → 404 op afbeeldingen.
+
 = 1.2.0 =
 * Security: escaping verbeterd in admin pagina's (esc_url, esc_attr)
 * Security: model-naam URL-geëncodeerd bij Google AI Studio API aanroepen
