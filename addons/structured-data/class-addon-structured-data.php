@@ -22,9 +22,11 @@ class RR_Addon_Structured_Data extends RR_Addon_Base {
         // Defensief: alleen requiren als bestanden daadwerkelijk bestaan,
         // zodat een halve sync niet tot een fatal error leidt.
         $builder_file  = __DIR__ . '/class-sd-builder.php';
+        $matrix_file   = __DIR__ . '/class-sd-matrix.php';
         $scanner_file  = __DIR__ . '/class-sd-scanner.php';
         $template_file = __DIR__ . '/class-sd-template.php';
         if (file_exists($builder_file))  require_once $builder_file;
+        if (file_exists($matrix_file))   require_once $matrix_file;
         if (file_exists($scanner_file))  require_once $scanner_file;
         if (file_exists($template_file)) require_once $template_file;
     }
