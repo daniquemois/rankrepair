@@ -78,9 +78,16 @@ class RR_SD_Scanner {
                             <span class="rr-sd-total"><strong><?php echo count($schemas); ?></strong> <?php _e('schemas', 'rankrepair'); ?></span>
                             <span class="rr-sd-total rr-sd-total--danger"><strong><?php echo (int) $totals['errors']; ?></strong> <?php _e('FOUTEN', 'rankrepair'); ?></span>
                             <span class="rr-sd-total rr-sd-total--warning"><strong><?php echo (int) $totals['warnings']; ?></strong> <?php _e('WAARSCHUWINGEN', 'rankrepair'); ?></span>
-                            <?php $suggested = $this->suggested_schemas_for($selected, $schemas); ?>
-                            <?php if (!empty($suggested)): ?>
-                            <span class="rr-sd-total rr-sd-total--add"><strong>+<?php echo count($suggested); ?></strong> <?php _e('aan te vullen', 'rankrepair'); ?></span>
+                            <?php
+                            $suggested = $this->suggested_schemas_for($selected, $schemas);
+                            $to_add    = array_values(array_filter($suggested, fn($s) => ($s['action'] ?? '') === 'add'));
+                            $to_remove = array_values(array_filter($suggested, fn($s) => ($s['action'] ?? '') === 'remove'));
+                            ?>
+                            <?php if (!empty($to_add)): ?>
+                            <span class="rr-sd-total rr-sd-total--add"><strong>+<?php echo count($to_add); ?></strong> <?php _e('toevoegen', 'rankrepair'); ?></span>
+                            <?php endif; ?>
+                            <?php if (!empty($to_remove)): ?>
+                            <span class="rr-sd-total rr-sd-total--remove"><strong>−<?php echo count($to_remove); ?></strong> <?php _e('weghalen', 'rankrepair'); ?></span>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -91,14 +98,36 @@ class RR_SD_Scanner {
 
                     <?php $this->render_custom_jsonld_box($selected, $custom_value, $types[$selected]['label'] ?? $selected); ?>
 
-                    <?php if (!empty($suggested)): ?>
+                    <?php if (!empty($to_add) || !empty($to_remove)): ?>
                     <div class="rr-sd-suggest">
+                        <?php if (!empty($to_add)): ?>
                         <h3><?php _e('Wat RankRepair kan aanvullen', 'rankrepair'); ?></h3>
                         <ul>
-                            <?php foreach ($suggested as $s): ?>
-                            <li><span class="rr-sd-plus">+</span> <strong><?php echo esc_html($s['type']); ?></strong> <span class="rr-sd-note"><?php echo esc_html($s['note']); ?></span></li>
+                            <?php foreach ($to_add as $s): ?>
+                            <li>
+                                <span class="rr-sd-plus">+</span>
+                                <strong><?php echo esc_html($s['type']); ?></strong>
+                                <span class="rr-sd-label-priority"><?php echo $s['priority'] === 'required' ? esc_html__('voeg toe — vereist', 'rankrepair') : esc_html__('voeg toe — optioneel', 'rankrepair'); ?></span>
+                                <span class="rr-sd-note"><?php echo esc_html($s['note']); ?></span>
+                            </li>
                             <?php endforeach; ?>
                         </ul>
+                        <?php endif; ?>
+
+                        <?php if (!empty($to_remove)): ?>
+                        <h3 class="rr-sd-suggest-h3--remove"><?php _e('Schemas die verwijderd kunnen worden', 'rankrepair'); ?></h3>
+                        <ul>
+                            <?php foreach ($to_remove as $s): ?>
+                            <li>
+                                <span class="rr-sd-minus">−</span>
+                                <strong><?php echo esc_html($s['type']); ?></strong>
+                                <span class="rr-sd-label-remove"><?php echo esc_html(sprintf(__('haal weg — bron: %s', 'rankrepair'), $s['source'])); ?></span>
+                                <span class="rr-sd-note"><?php echo esc_html($s['note']); ?></span>
+                            </li>
+                            <?php endforeach; ?>
+                        </ul>
+                        <?php endif; ?>
+
                         <a href="<?php echo esc_url(admin_url('admin.php?page=rankrepair-settings')); ?>" class="button button-secondary">
                             <?php _e('Configureer in Instellingen →', 'rankrepair'); ?>
                         </a>
@@ -609,34 +638,23 @@ class RR_SD_Scanner {
         return '';
     }
 
+    /**
+     * Suggesties (add + remove) op basis van de matrix.
+     * @param string $type     detectie-key uit get_page_types()
+     * @param array  $existing scan-resultaat: [['data'=>[...], 'source'=>'Yoast'], ...]
+     */
     private function suggested_schemas_for(string $type, array $existing): array {
-        $existing_types = [];
-        foreach ($existing as $s) {
-            $t = $s['data']['@type'] ?? '';
-            if (is_array($t)) { foreach ($t as $tt) $existing_types[strtolower($tt)] = true; }
-            else              { $existing_types[strtolower((string)$t)] = true; }
-        }
-        $has = fn(string $t) => isset($existing_types[strtolower($t)]);
+        $page_type = RR_SD_Matrix::normalize_page_type($type);
+        if ($page_type === null) return [];
 
-        $out = [];
-        if (!$has('Organization') && !$has('LocalBusiness') && get_option('rr_sd_schema_organization', '1') === '1') {
-            $out[] = ['type' => 'Organization', 'note' => __('globaal — bedrijfsgegevens uit instellingen', 'rankrepair')];
+        $detected = [];
+        foreach ($existing as $s) {
+            $t   = $s['data']['@type'] ?? '';
+            $src = $s['source'] ?? '';
+            foreach ((array) $t as $tt) {
+                if ($tt !== '') $detected[] = ['type' => (string) $tt, 'source' => $src];
+            }
         }
-        if ($type === 'home' && !$has('WebSite') && get_option('rr_sd_schema_website', '1') === '1') {
-            $out[] = ['type' => 'WebSite + SearchAction', 'note' => __('sitelink search box', 'rankrepair')];
-        }
-        if ($type !== 'home' && !$has('BreadcrumbList') && get_option('rr_sd_schema_breadcrumb', '1') === '1') {
-            $out[] = ['type' => 'BreadcrumbList', 'note' => __('auto uit URL-hiërarchie', 'rankrepair')];
-        }
-        if ($type === 'product' && !$has('Product') && get_option('rr_sd_schema_product', '1') === '1') {
-            $out[] = ['type' => 'Product + Offer', 'note' => __('uit WooCommerce data', 'rankrepair')];
-        }
-        if ($type === 'product_cat' && !$has('ProductGroup') && !$has('ItemList') && get_option('rr_sd_schema_productgroup', '1') === '1') {
-            $out[] = ['type' => 'ProductGroup', 'note' => __('varianten uit sub-categorieën', 'rankrepair')];
-        }
-        if (in_array($type, ['post', 'page'], true) && !$has('FAQPage') && get_option('rr_sd_schema_faqpage', '1') === '1') {
-            $out[] = ['type' => 'FAQPage', 'note' => __('indien FAQ-block aanwezig', 'rankrepair')];
-        }
-        return $out;
+        return RR_SD_Matrix::compare($page_type, $detected);
     }
 }
