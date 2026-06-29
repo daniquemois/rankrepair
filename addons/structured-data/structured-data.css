@@ -102,6 +102,7 @@
 .rr-sd-total--danger strong  { color: #dc2626; }
 .rr-sd-total--warning strong { color: #b45309; }
 .rr-sd-total--add strong     { color: var(--rr-purple, #7c3aed); }
+.rr-sd-total--remove strong  { color: #dc2626; }
 
 /* ── Aanvul-suggestie ─────────────────────────── */
 .rr-sd-suggest {
@@ -119,6 +120,28 @@
     color: var(--rr-purple, #7c3aed);
     margin-right: 4px;
 }
+.rr-sd-minus {
+    font-weight: 800;
+    color: #dc2626;
+    margin-right: 4px;
+}
+.rr-sd-label-priority {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--rr-purple, #7c3aed);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-left: 6px;
+}
+.rr-sd-label-remove {
+    font-size: 11px;
+    font-weight: 700;
+    color: #dc2626;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-left: 6px;
+}
+.rr-sd-suggest-h3--remove { color: #dc2626; margin-top: 14px; }
 .rr-sd-note { color: var(--rr-gray-500, #6b7280); font-size: 12px; margin-left: 6px; }
 
 .rr-sd-empty {
