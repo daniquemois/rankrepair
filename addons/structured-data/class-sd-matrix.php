@@ -57,6 +57,7 @@ class RR_SD_Matrix {
         if (strpos($detect_key, 'product_cat') === 0) return 'plp';
         if (in_array($detect_key, ['post', 'blog_index', 'category'], true)) return 'blog';
         if (in_array($detect_key, ['faq', 'about', 'contact', 'business_reviews', 'search', 'cart', 'checkout', 'account', 'author', 'location', 'brand', 'promo', 'service', 'recipe'], true)) return $detect_key;
+        if (isset(self::default_matrix()[$detect_key])) return $detect_key;
         return null;
     }
 
@@ -65,13 +66,15 @@ class RR_SD_Matrix {
      * @param string $page_type matrix page_type
      * @param array  $detected  [['type'=>'Product','source'=>'Yoast'], ...]
      * @return array [['action'=>'add|remove','type'=>..,'priority'=>'required|optional','source'=>..,'note'=>..], ...]
+     * @note $detected moet ALLE schema's bevatten die op de pagina staan (inclusief
+     *       RankRepair's eigen output), anders klopt de remove-detectie niet.
      */
     public static function compare(string $page_type, array $detected): array {
         $rules = self::get($page_type);
         $present = [];
         foreach ($detected as $d) {
             $t = strtolower((string)($d['type'] ?? ''));
-            if ($t !== '') $present[$t] = $d['source'] ?? '';
+            if ($t !== '') $present[$t] = ['source' => $d['source'] ?? '', 'original' => (string)($d['type'] ?? '')];
         }
         $has = fn(string $t) => isset($present[strtolower($t)]);
         $out = [];
@@ -86,12 +89,12 @@ class RR_SD_Matrix {
         }
 
         $allowed = array_map('strtolower', array_merge($rules['always'], $rules['optional']));
-        foreach ($present as $type_lc => $source) {
+        foreach ($present as $type_lc => $info) {
             $forbidden_all = in_array('*', $rules['forbidden'], true);
             $forbidden_explicit = in_array($type_lc, array_map('strtolower', $rules['forbidden']), true);
             $not_allowed = $forbidden_all && !in_array($type_lc, $allowed, true);
             if ($forbidden_explicit || $not_allowed) {
-                $out[] = ['action' => 'remove', 'type' => ucfirst($type_lc), 'priority' => 'required', 'source' => $source ?: 'onbekend', 'note' => $rules['note']];
+                $out[] = ['action' => 'remove', 'type' => $info['original'] ?: $type_lc, 'priority' => 'required', 'source' => $info['source'] ?: 'onbekend', 'note' => $rules['note']];
             }
         }
         return $out;
