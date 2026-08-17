@@ -326,17 +326,17 @@ class RR_Agent {
         ];
 
         // Security-blok. Defensief: mag de heartbeat nooit breken.
-        // Voorkeur: Wordfence als die geïnstalleerd is (rijkere data); anders RankRepair's
-        // eigen gratis scanner.
+        // Voorkeur: de EIGEN RankRepair-scanner. Wordfence alleen als die echt actief is
+        // én een voltooide scan heeft (niet louter omdat het plugin-bestand aanwezig is —
+        // dat gaf een misleidende scanner:"wordfence" / last_scan_status:"failed").
         $security = [ 'scanner' => 'rankrepair', 'last_scan_at' => null, 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
         try {
-            $wf = class_exists( 'RR_Wordfence' ) ? RR_Wordfence::get_security_block() : [ 'installed' => false ];
-            if ( ! empty( $wf['installed'] ) ) {
-                $security = $wf;                                  // Wordfence aanwezig
-            } elseif ( class_exists( 'RR_Malware_Scan' ) ) {
-                $security = RR_Malware_Scan::get_security_block(); // eigen gratis scanner
-            } else {
-                $security = $wf;                                  // wordfence installed:false
+            $wf  = class_exists( 'RR_Wordfence' ) ? RR_Wordfence::get_security_block() : null;
+            $own = class_exists( 'RR_Malware_Scan' ) ? RR_Malware_Scan::get_security_block() : null;
+            if ( class_exists( 'RR_Malware_Scan' ) ) {
+                $security = RR_Malware_Scan::choose_security_source( $wf, $own );
+            } elseif ( is_array( $wf ) ) {
+                $security = $wf;
             }
         } catch ( \Throwable $e ) {
             $security = [ 'scanner' => 'rankrepair', 'last_scan_at' => null, 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
