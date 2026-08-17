@@ -321,7 +321,7 @@ class RR_Agent {
         // Security-blok. Defensief: mag de heartbeat nooit breken.
         // Voorkeur: Wordfence als die geïnstalleerd is (rijkere data); anders RankRepair's
         // eigen gratis scanner.
-        $security = [ 'scanner' => 'rankrepair', 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
+        $security = [ 'scanner' => 'rankrepair', 'last_scan_at' => null, 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
         try {
             $wf = class_exists( 'RR_Wordfence' ) ? RR_Wordfence::get_security_block() : [ 'installed' => false ];
             if ( ! empty( $wf['installed'] ) ) {
@@ -332,7 +332,7 @@ class RR_Agent {
                 $security = $wf;                                  // wordfence installed:false
             }
         } catch ( \Throwable $e ) {
-            $security = [ 'scanner' => 'rankrepair', 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
+            $security = [ 'scanner' => 'rankrepair', 'last_scan_at' => null, 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
         }
 
         return [
