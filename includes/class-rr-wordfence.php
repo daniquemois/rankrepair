@@ -182,6 +182,18 @@ class RR_Wordfence {
         $status       = self::read_scan_status($last_scan_at);
         $issues       = self::read_issues();
 
+        // Konden we de bevindingen niet betrouwbaar lezen (leesfout / onbekend schema)?
+        // Dan NOOIT als 'clean' rapporteren: forceer een niet-voltooide status zodat het
+        // verdict 'unknown' wordt. Beter een vals "controleren" dan een vals "schoon".
+        if ($issues === null) {
+            return [
+                'installed'        => true,
+                'last_scan_at'     => $last_scan_at,
+                'last_scan_status' => ($status === 'running') ? 'running' : 'failed',
+                'issues'           => [],
+            ];
+        }
+
         return [
             'installed'        => true,
             'last_scan_at'     => $last_scan_at,
@@ -258,8 +270,11 @@ class RR_Wordfence {
             // Niet-lege, niet-'ok' waarde = mislukte/afgebroken scan.
             return 'failed';
         }
-        // Geen 'lastScanCompleted' bekend.
-        return $scan_time ? 'completed' : 'never';
+        // Geen positief 'ok'-signaal. NOOIT naar 'completed' defaulten — dat zou tot
+        // een vals 'clean'-verdict kunnen leiden op een besmette site. Is er wél ooit
+        // een scan geweest (scanTime) maar kunnen we voltooiing niet bevestigen, dan
+        // 'failed' (levert 'unknown' op zonder bevindingen); anders nog nooit gescand.
+        return $scan_time ? 'failed' : 'never';
     }
 
     private static function is_scan_running(): bool {
@@ -279,39 +294,50 @@ class RR_Wordfence {
     }
 
     /**
-     * Leest open issues. Probeert wfIssues-klasse, valt terug op de wfIssues-tabel.
+     * Leest open issues uit de wfIssues-tabel (de stabielste interface over versies).
      * Alleen 'new' (openstaande) issues tellen mee.
-     * @return array Lijst genormaliseerde issues (zie classify_issue()).
+     *
+     * BELANGRIJK: retourneert null wanneer de bevindingen NIET betrouwbaar te lezen zijn
+     * (geen $wpdb, tabel onvindbaar, of een DB-leesfout). Een lege array betekent
+     * uitsluitend "met zekerheid geen open bevindingen". De aanroeper mag null nooit als
+     * 'geen bevindingen' behandelen — dat zou een besmette site vals 'clean' maken.
+     *
+     * @return array|null Lijst genormaliseerde issues (zie classify_issue()), of null bij leesfout.
      */
-    private static function read_issues(): array {
-        // Poging 1: DB (meest stabiele interface over versies).
+    private static function read_issues(): ?array {
         global $wpdb;
-        if (isset($wpdb)) {
-            $table = self::wf_table('wfIssues');
-            $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
-            if ($exists === $table) {
-                $rows = $wpdb->get_results(
-                    "SELECT type, severity, shortMsg, longMsg FROM {$table} WHERE status = 'new'",
-                    ARRAY_A
-                );
-                if (is_array($rows)) {
-                    $out = [];
-                    foreach ($rows as $row) {
-                        $msg = trim((string) ($row['shortMsg'] ?? ''));
-                        if ($msg === '') {
-                            $msg = (string) ($row['longMsg'] ?? '');
-                        }
-                        $out[] = self::classify_issue(
-                            (string) ($row['type'] ?? ''),
-                            $row['severity'] ?? 0,
-                            $msg
-                        );
-                    }
-                    return $out;
-                }
-            }
+        if (!isset($wpdb)) {
+            return null;
         }
-        return [];
+        $table  = self::wf_table('wfIssues');
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($exists !== $table) {
+            // Wordfence aanwezig maar issues-tabel onvindbaar: staat onbekend, niet "schoon".
+            return null;
+        }
+
+        $rows = $wpdb->get_results(
+            "SELECT type, severity, shortMsg, longMsg FROM {$table} WHERE status = 'new'",
+            ARRAY_A
+        );
+        // Een DB-fout (bv. afwijkend schema/kolomnaam) mag niet als "geen bevindingen" gelden.
+        if (!empty($wpdb->last_error) || !is_array($rows)) {
+            return null;
+        }
+
+        $out = [];
+        foreach ($rows as $row) {
+            $msg = trim((string) ($row['shortMsg'] ?? ''));
+            if ($msg === '') {
+                $msg = (string) ($row['longMsg'] ?? '');
+            }
+            $out[] = self::classify_issue(
+                (string) ($row['type'] ?? ''),
+                $row['severity'] ?? 0,
+                $msg
+            );
+        }
+        return $out;
     }
 
     // =====================================================================
