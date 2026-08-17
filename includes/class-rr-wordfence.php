@@ -48,9 +48,9 @@ class RR_Wordfence {
      *   'issues' => array<array{type:string,severity:string,detail:string,is_malware:bool,is_core_modified:bool}>,
      * ]
      */
-    public static function derive_security_block(array $n): array {
+    public static function derive_security_block(array $n, string $scanner = 'wordfence'): array {
         if (empty($n['installed'])) {
-            return ['scanner' => 'wordfence', 'installed' => false];
+            return ['scanner' => $scanner, 'installed' => false];
         }
 
         $issues = isset($n['issues']) && is_array($n['issues']) ? $n['issues'] : [];
@@ -104,7 +104,7 @@ class RR_Wordfence {
         $ts = isset($n['last_scan_at']) && $n['last_scan_at'] ? (int) $n['last_scan_at'] : null;
 
         return [
-            'scanner'          => 'wordfence',
+            'scanner'          => $scanner,
             'installed'        => true,
             'last_scan_at'     => $ts ? gmdate('Y-m-d\TH:i:s\Z', $ts) : null,
             'last_scan_status' => $status,

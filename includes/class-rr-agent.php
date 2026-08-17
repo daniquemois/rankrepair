@@ -318,14 +318,21 @@ class RR_Agent {
             'update_available' => (bool) $core_new,
         ];
 
-        // Security-blok (Wordfence-scanuitslag). Defensief: mag de heartbeat nooit breken.
-        $security = [ 'scanner' => 'wordfence', 'installed' => false ];
-        if ( class_exists( 'RR_Wordfence' ) ) {
-            try {
-                $security = RR_Wordfence::get_security_block();
-            } catch ( \Throwable $e ) {
-                $security = [ 'scanner' => 'wordfence', 'installed' => false ];
+        // Security-blok. Defensief: mag de heartbeat nooit breken.
+        // Voorkeur: Wordfence als die geïnstalleerd is (rijkere data); anders RankRepair's
+        // eigen gratis scanner.
+        $security = [ 'scanner' => 'rankrepair', 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
+        try {
+            $wf = class_exists( 'RR_Wordfence' ) ? RR_Wordfence::get_security_block() : [ 'installed' => false ];
+            if ( ! empty( $wf['installed'] ) ) {
+                $security = $wf;                                  // Wordfence aanwezig
+            } elseif ( class_exists( 'RR_Malware_Scan' ) ) {
+                $security = RR_Malware_Scan::get_security_block(); // eigen gratis scanner
+            } else {
+                $security = $wf;                                  // wordfence installed:false
             }
+        } catch ( \Throwable $e ) {
+            $security = [ 'scanner' => 'rankrepair', 'last_scan_status' => 'never', 'verdict' => 'unknown', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
         }
 
         return [

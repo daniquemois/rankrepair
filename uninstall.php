@@ -52,11 +52,16 @@ $options = [
     'rr_agent_last_response',
     'rr_agent_linked_client',
     'rr_level4_url',
+    'rr_malware_scan_result',
+    'rr_malware_scan_progress',
 ];
 
 foreach ($options as $option) {
     delete_option($option);
 }
+
+// Geplande malware-scan opruimen.
+wp_clear_scheduled_hook('rr_malware_scan_event');
 
 // Drop custom tables
 $tables = [

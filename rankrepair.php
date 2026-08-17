@@ -54,7 +54,12 @@ final class RankRepair {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-ajax-handler.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-updater.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-wordfence.php';
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-malware-scan.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
+
+        // Eigen (gratis) malware-scan: cron-hook + zelfhelende planning.
+        add_action( RR_Malware_Scan::CRON_HOOK, [ 'RR_Malware_Scan', 'run_and_store' ] );
+        add_action( 'init', [ 'RR_Malware_Scan', 'schedule' ] );
 
         $updater = new RR_Updater( RR_PLUGIN_FILE, RR_VERSION );
         $updater->init();
@@ -197,6 +202,8 @@ final class RankRepair {
     public function deactivate() {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
         RR_Agent::on_deactivate();
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-malware-scan.php';
+        RR_Malware_Scan::unschedule();
         flush_rewrite_rules();
     }
 
