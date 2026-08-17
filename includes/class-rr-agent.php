@@ -40,6 +40,7 @@ class RR_Agent {
         add_action( 'admin_menu', [ $this, 'register_admin_page' ], 20 );
         add_action( 'admin_post_rr_agent_resend_heartbeat', [ $this, 'handle_resend_heartbeat' ] );
         add_action( 'admin_post_rr_agent_register_now', [ $this, 'handle_register_now' ] );
+        add_action( 'admin_post_rr_malware_scan_now', [ $this, 'handle_malware_scan_now' ] );
 
         // REST endpoints (binnenkomend vanuit Level 4)
         add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
@@ -760,6 +761,52 @@ class RR_Agent {
         }
         echo '</p>';
 
+        // ── Beveiliging: interne malware-scan ────────────────────────────────
+        if ( class_exists( 'RR_Malware_Scan' ) ) {
+            echo '<h2>' . esc_html__( 'Beveiliging — interne scan', 'rankrepair' ) . '</h2>';
+
+            echo '<p>';
+            echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline-block">';
+            wp_nonce_field( 'rr_malware_scan_now' );
+            echo '<input type="hidden" name="action" value="rr_malware_scan_now">';
+            echo '<button class="button button-primary">' . esc_html__( 'Scan nu', 'rankrepair' ) . '</button>';
+            echo '</form> <span style="color:#666">' . esc_html__( '(kan tot ~1 min duren; draait anders elk uur gechunkt via cron)', 'rankrepair' ) . '</span>';
+            echo '</p>';
+
+            try {
+                $block = RR_Malware_Scan::get_security_block();
+            } catch ( \Throwable $e ) {
+                $block = [ 'verdict' => 'unknown', 'last_scan_status' => 'never', 'counts' => [ 'critical' => 0, 'warning' => 0 ], 'issues' => [] ];
+            }
+            $verdict = isset( $block['verdict'] ) ? (string) $block['verdict'] : 'unknown';
+            $colors  = [ 'clean' => '#1a7f37', 'issues' => '#bf8700', 'critical' => '#b32d2e', 'unknown' => '#666' ];
+            $dot     = isset( $colors[ $verdict ] ) ? $colors[ $verdict ] : '#666';
+
+            echo '<table class="form-table"><tbody>';
+            echo '<tr><th>' . esc_html__( 'Verdict', 'rankrepair' ) . '</th><td><span style="color:' . esc_attr( $dot ) . '">●</span> <strong>' . esc_html( strtoupper( $verdict ) ) . '</strong></td></tr>';
+            echo '<tr><th>' . esc_html__( 'Scanstatus', 'rankrepair' ) . '</th><td>' . esc_html( (string) ( $block['last_scan_status'] ?? 'never' ) ) . '</td></tr>';
+            $c = isset( $block['counts'] ) ? $block['counts'] : [ 'critical' => 0, 'warning' => 0 ];
+            echo '<tr><th>' . esc_html__( 'Bevindingen', 'rankrepair' ) . '</th><td>' . esc_html( sprintf( __( '%d kritiek · %d waarschuwing', 'rankrepair' ), (int) ( $c['critical'] ?? 0 ), (int) ( $c['warning'] ?? 0 ) ) ) . '</td></tr>';
+            echo '</tbody></table>';
+
+            if ( ! empty( $block['issues'] ) && is_array( $block['issues'] ) ) {
+                echo '<table class="widefat striped" style="max-width:900px;margin-top:8px"><thead><tr>';
+                echo '<th>' . esc_html__( 'Ernst', 'rankrepair' ) . '</th><th>' . esc_html__( 'Type', 'rankrepair' ) . '</th><th>' . esc_html__( 'Pad', 'rankrepair' ) . '</th><th>' . esc_html__( 'Detail', 'rankrepair' ) . '</th>';
+                echo '</tr></thead><tbody>';
+                foreach ( array_slice( $block['issues'], 0, 50 ) as $iss ) {
+                    $sev = ( isset( $iss['severity'] ) && $iss['severity'] === 'critical' ) ? 'critical' : 'warning';
+                    $sevColor = $sev === 'critical' ? '#b32d2e' : '#bf8700';
+                    echo '<tr>';
+                    echo '<td><span style="color:' . esc_attr( $sevColor ) . ';font-weight:600">' . esc_html( $sev ) . '</span></td>';
+                    echo '<td><code>' . esc_html( (string) ( $iss['type'] ?? '' ) ) . '</code></td>';
+                    echo '<td><code>' . esc_html( (string) ( $iss['path'] ?? '' ) ) . '</code></td>';
+                    echo '<td>' . esc_html( (string) ( $iss['detail'] ?? '' ) ) . '</td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table>';
+            }
+        }
+
         if ( ! empty( $last_resp ) ) {
             echo '<h2>' . esc_html__( 'Laatste respons', 'rankrepair' ) . '</h2>';
             echo '<pre style="background:#f3f4f6;padding:12px;border-radius:6px;max-width:800px;overflow:auto">';
@@ -787,6 +834,18 @@ class RR_Agent {
         check_admin_referer( 'rr_agent_register_now' );
         $this->register_with_level4();
         wp_safe_redirect( admin_url( 'admin.php?page=rankrepair-level4&rr=reg' ) );
+        exit;
+    }
+
+    public function handle_malware_scan_now(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'forbidden' );
+        }
+        check_admin_referer( 'rr_malware_scan_now' );
+        if ( class_exists( 'RR_Malware_Scan' ) ) {
+            RR_Malware_Scan::run_full( 55 );
+        }
+        wp_safe_redirect( admin_url( 'admin.php?page=rankrepair-level4&rr=scan' ) );
         exit;
     }
 }
