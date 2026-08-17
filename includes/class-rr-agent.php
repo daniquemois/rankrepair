@@ -250,6 +250,12 @@ class RR_Agent {
         update_option( self::OPT_LAST_RESPONSE, [ 'kind' => 'heartbeat', 'code' => $code, 'body' => $resp, 'at' => time() ], false );
         if ( $code >= 200 && $code < 300 ) {
             update_option( self::OPT_LAST_HEARTBEAT, time(), false );
+            // Level 4 geeft in de respons terug aan welke klant de site gekoppeld is
+            // (of null als nog niet gekoppeld). Zo blijft de admin-status accuraat.
+            if ( is_array( $resp ) && array_key_exists( 'linked_client', $resp ) ) {
+                $linked = $resp['linked_client'];
+                update_option( self::OPT_LINKED_CLIENT, is_string( $linked ) ? $linked : '', false );
+            }
             return [ 'ok' => true, 'response' => $resp ];
         }
         return [ 'ok' => false, 'code' => $code, 'response' => $resp ];
