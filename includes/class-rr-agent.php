@@ -318,6 +318,16 @@ class RR_Agent {
             'update_available' => (bool) $core_new,
         ];
 
+        // Security-blok (Wordfence-scanuitslag). Defensief: mag de heartbeat nooit breken.
+        $security = [ 'scanner' => 'wordfence', 'installed' => false ];
+        if ( class_exists( 'RR_Wordfence' ) ) {
+            try {
+                $security = RR_Wordfence::get_security_block();
+            } catch ( \Throwable $e ) {
+                $security = [ 'scanner' => 'wordfence', 'installed' => false ];
+            }
+        }
+
         return [
             'site_url'    => home_url(),
             'site_name'   => get_bloginfo( 'name' ),
@@ -327,6 +337,7 @@ class RR_Agent {
             'core'        => $core,
             'plugins'     => $plugin_list,
             'themes'      => $theme_list,
+            'security'    => $security,
         ];
     }
 
@@ -574,7 +585,29 @@ class RR_Agent {
             $job_id = isset( $job['id'] ) ? (string) $job['id'] : '';
             $kind   = isset( $job['kind'] ) ? (string) $job['kind'] : '';
             $slug   = isset( $job['slug'] ) ? (string) $job['slug'] : '';
-            if ( ! $job_id || ! in_array( $kind, [ 'plugin', 'theme', 'core' ], true ) ) {
+            if ( ! $job_id ) {
+                continue;
+            }
+
+            // Install-flow: momenteel alleen Wordfence (bulk-uitrol).
+            if ( $kind === 'install_plugin' ) {
+                $started = microtime( true );
+                $r       = null;
+                if ( $slug === '' || $slug === 'wordfence' ) {
+                    if ( class_exists( 'RR_Wordfence' ) ) {
+                        $r = RR_Wordfence::install_and_configure( 'wordfence' );
+                    } else {
+                        $r = [ 'ok' => false, 'error' => 'rr_wordfence_missing' ];
+                    }
+                } else {
+                    $r = [ 'ok' => false, 'error' => 'unsupported_install_slug' ];
+                }
+                $total_ms = (int) round( ( microtime( true ) - $started ) * 1000 );
+                $this->report_job_result( $job_id, $r, $total_ms );
+                continue;
+            }
+
+            if ( ! in_array( $kind, [ 'plugin', 'theme', 'core' ], true ) ) {
                 continue;
             }
 

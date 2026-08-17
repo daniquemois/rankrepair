@@ -53,6 +53,7 @@ final class RankRepair {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-addon-base.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-ajax-handler.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-updater.php';
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-wordfence.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
 
         $updater = new RR_Updater( RR_PLUGIN_FILE, RR_VERSION );
