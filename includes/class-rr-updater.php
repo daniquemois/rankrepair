@@ -40,7 +40,11 @@ class RR_Updater {
         }
 
         $cache_key = 'rr_github_release';
-        $cached    = get_transient( $cache_key );
+
+        // Bij een handmatige "Controleer op updates" (WordPress zet ?force-check=1) de
+        // 1-uurs-cache omzeilen, zodat een net gepubliceerde release meteen zichtbaar is.
+        $force  = isset( $_GET['force-check'] ) && current_user_can( 'update_plugins' );
+        $cached = $force ? false : get_transient( $cache_key );
 
         if ( $cached !== false ) {
             $this->release_cache = $cached;
