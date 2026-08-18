@@ -3,7 +3,7 @@
  * Plugin Name: RankRepair
  * Plugin URI: https://example.com/rankrepair
  * Description: Los veelvoorkomende SEO- en performance-problemen op met één klik. Dashboard met PageSpeed integratie en modulaire add-ons.
- * Version: 1.6.1
+ * Version: 1.7.0
  * Author: Danique
  * Author URI: https://example.com
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('RR_VERSION', '1.6.1');
+define('RR_VERSION', '1.7.0');
 define('RR_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('RR_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('RR_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -53,7 +53,13 @@ final class RankRepair {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-addon-base.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-ajax-handler.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-updater.php';
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-wordfence.php';
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-malware-scan.php';
         require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
+
+        // Eigen (gratis) malware-scan: cron-hook + zelfhelende planning.
+        add_action( RR_Malware_Scan::CRON_HOOK, [ 'RR_Malware_Scan', 'run_and_store' ] );
+        add_action( 'init', [ 'RR_Malware_Scan', 'schedule' ] );
 
         $updater = new RR_Updater( RR_PLUGIN_FILE, RR_VERSION );
         $updater->init();
@@ -196,6 +202,8 @@ final class RankRepair {
     public function deactivate() {
         require_once RR_PLUGIN_DIR . 'includes/class-rr-agent.php';
         RR_Agent::on_deactivate();
+        require_once RR_PLUGIN_DIR . 'includes/class-rr-malware-scan.php';
+        RR_Malware_Scan::unschedule();
         flush_rewrite_rules();
     }
 
